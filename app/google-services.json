@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "164414426393",
+    "project_id": "acif-diab",
+    "storage_bucket": "acif-diab.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:164414426393:android:82458c2b6e2cbe07fb0988",
+        "android_client_info": {
+          "package_name": "com.example.diabetes_app"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAJOq0e2RrIpGt5U9wvVffL0b20ux_GMZg"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

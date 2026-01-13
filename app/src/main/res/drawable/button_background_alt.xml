@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ripple xmlns:android="http://schemas.android.com/apk/res/android"
+    android:color="?android:attr/colorControlHighlight">
+
+    <!-- Efecto de ripple en la superficie -->
+    <item android:id="@android:id/mask">
+        <shape android:shape="rectangle">
+            <solid android:color="#20FFFFFF" /> <!-- Transparencia sutil -->
+            <corners android:radius="16dp" /> <!-- Bordes más suaves -->
+        </shape>
+    </item>
+
+    <!-- Estado normal del botón -->
+    <item>
+        <shape android:shape="rectangle">
+            <solid android:color="#FFFFFF"/> <!-- Fondo blanco -->
+            <corners android:radius="16dp"/> <!-- Bordes redondeados -->
+            <stroke android:width="2dp" android:color="#3A5A80"/> <!-- Borde azul oscuro -->
+        </shape>
+    </item>
+
+    <!-- Estado presionado -->
+    <item android:state_pressed="true">
+        <shape android:shape="rectangle">
+            <solid android:color="#3A5A80"/> <!-- Fondo azul oscuro al presionar -->
+            <corners android:radius="16dp"/>
+            <stroke android:width="2dp" android:color="#FFFFFF"/> <!-- Borde blanco -->
+        </shape>
+    </item>
+
+</ripple>

@@ -1,0 +1,8 @@
+[versions]
+navigationCommonAndroid = "2.9.0"
+roomRuntimeAndroid = "2.8.3"
+animationCoreAndroid = "1.7.2"
+[libraries]
+androidx-navigation-common-android = { group = "androidx.navigation", name = "navigation-common-android", version.ref = "navigationCommonAndroid" }
+androidx-room-runtime-android = { group = "androidx.room", name = "room-runtime-android", version.ref = "roomRuntimeAndroid" }
+androidx-animation-core-android = { group = "androidx.compose.animation", name = "animation-core-android", version.ref = "animationCoreAndroid" }

@@ -1,0 +1,71 @@
+<?xml version="1.0" encoding="utf-8"?>
+<layer-list xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- Fondo degradado moderno -->
+    <item>
+        <shape android:shape="rectangle">
+            <gradient
+                android:startColor="#EEF5FF"
+                android:centerColor="#D1E2F3"
+                android:endColor="#AFCBE9"
+                android:angle="45"/>
+        </shape>
+    </item>
+
+    <!-- Círculo superior izquierdo -->
+    <item>
+        <shape android:shape="oval">
+            <size android:width="300dp" android:height="300dp"/>
+            <solid android:color="#30FFFFFF"/> <!-- Transparencia suave -->
+        </shape>
+        <gravity android:gravity="top|start"/>
+    </item>
+
+    <!-- Círculo inferior derecho -->
+    <item>
+        <shape android:shape="oval">
+            <size android:width="250dp" android:height="250dp"/>
+            <solid android:color="#30D1E2F3"/>
+        </shape>
+        <gravity android:gravity="bottom|end"/>
+    </item>
+
+    <!-- Línea diagonal estilizada -->
+    <item>
+        <rotate android:fromDegrees="-30">
+            <shape android:shape="rectangle">
+                <size android:width="120dp" android:height="700dp"/>
+                <solid android:color="#20FFFFFF"/>
+                <corners android:radius="60dp"/>
+            </shape>
+        </rotate>
+        <gravity android:gravity="center"/>
+    </item>
+
+    <!-- Cuadro inclinado para dar profundidad -->
+    <item>
+        <rotate android:fromDegrees="45">
+            <shape android:shape="rectangle">
+                <size android:width="80dp" android:height="80dp"/>
+                <solid android:color="#33FFFFFF"/>
+                <corners android:radius="10dp"/>
+            </shape>
+        </rotate>
+        <gravity android:gravity="start|center"/>
+    </item>
+
+    <!-- Rectángulo con esquinas personalizadas -->
+    <item>
+        <shape android:shape="rectangle">
+            <size android:width="60dp" android:height="100dp"/>
+            <solid android:color="#33AFCBE9"/>
+            <corners
+                android:topLeftRadius="40dp"
+                android:bottomRightRadius="40dp"
+                android:topRightRadius="10dp"
+                android:bottomLeftRadius="10dp"/>
+        </shape>
+        <gravity android:gravity="end|bottom"/>
+    </item>
+
+</layer-list>

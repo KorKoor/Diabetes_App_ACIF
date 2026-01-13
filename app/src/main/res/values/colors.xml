@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+
+    <color name="ic_launcher_background">#FFFFFF</color>
+    <!-- Colores primarios -->
+    <color name="primaryText">#3A5A80</color>
+    <color name="cardBackground">#FFFFFF</color>
+    <color name="cardStroke">#D1E2F3</color>
+
+    <!-- Degradado de fondo -->
+    <color name="backgroundGradientStart">#EEF5FF</color>
+    <color name="backgroundGradientEnd">#AFCBE9</color>
+
+    <!-- Textos secundarios y de fondo -->
+    <color name="textSecondary">#7F8C9B</color>
+    <color name="textOnPrimaryColor">#FFFFFF</color>
+    <color name="textHint">#A0AFC0</color>
+    <color name="appBackground">#F4F6F8</color>
+    <color name="dividerColor">#E0E7EF</color>
+    <color name="placeholderBackground">#E8EFF5</color>
+
+    <!-- Header -->
+    <color name="headerBackground">#4A55A2</color>
+    <color name="headerText">@color/textOnPrimaryColor</color>
+
+    <!-- Colores de tarjetas de vitales -->
+    <color name="vitalsCardBackground">#FFF0F3</color>
+    <color name="vitalsTextPrimary">#C65B7C</color>
+    <color name="vitalsTextSecondary">#D98BAA</color>
+    <color name="vitalsButtonAddNoteText">#B94469</color>
+
+    <!-- Botones principales y secundarios -->
+    <color name="buttonPrimaryBackground">@color/primaryText</color>
+    <color name="buttonPrimaryText">@color/textOnPrimaryColor</color>
+    <color name="buttonSecondaryStroke">@color/primaryText</color>
+    <color name="buttonSecondaryText">@color/primaryText</color>
+
+    <!-- Botón verde de acción -->
+    <color name="accentGreenButton">#38A169</color>
+    <color name="accentGreenButtonText">@color/textOnPrimaryColor</color>
+
+    <!-- Botón rosa de acción -->
+    <color name="accentPinkButton">@color/vitalsButtonAddNoteText</color>
+    <color name="accentPinkButtonText">@color/textOnPrimaryColor</color>
+
+    <!-- Navegación inferior -->
+    <color name="bottomNavBackground">#FFFFFF</color>
+    <color name="bottomNavItemActive">@color/primaryText</color>
+    <color name="bottomNavItemInactive">#A0AFC0</color>
+    <color name="bottomNavStroke">@color/cardStroke</color>
+
+    <!-- Barra de estado -->
+    <color name="statusBarColor">@color/headerBackground</color>
+    <color name="rippleEffectColor">#40FFFFFF</color>
+    <color name="cardBackgroundOverlay">#C5E8D5</color>
+    <color name="bottomNavActiveIndicator">#2196F3</color> <!-- Azul brillante como ejemplo -->
+    <!-- En values-night/colors.xml -->
+    <color name="buttonPrimaryBackgroundDark">#1A237E</color> <!-- Claro para modo oscuro -->
+
+    <color name="drawerBackground">#F5F9FF</color>
+    <color name="drawerItemText">#FFFFFF</color>
+    <color name="drawerDivider">#B0BEC5</color>
+    <color name="drawerHomeCircle">#1976D2</color>
+    <color name="drawerItemIcon">#607D8B</color>
+    <color name="drawerItemIconSelected">#FFFFFF</color>
+    <color name="drawerItemTextSelected">#FFFFFF</color>
+    <color name="drawerItemSelectedBackground">#1976D2</color>
+    <color name="cardBackgroundStart">#58AF8E</color>
+    <color name="cardBackgroundEnd">#009688</color>
+    <color name="drawerTitleText">#212121</color>
+    <!-- Botón azul para "Bajo peso" -->
+    <color name="accentBlueButton">#4299E1</color> <!-- Azul claro -->
+
+    <!-- Botón amarillo para "Sobrepeso" -->
+    <color name="accentYellowButton">#F6E05E</color> <!-- Amarillo suave -->
+    <color name="accentRedButton">#F28B82</color> <!-- Rojo coral suave -->
+
+</resources>

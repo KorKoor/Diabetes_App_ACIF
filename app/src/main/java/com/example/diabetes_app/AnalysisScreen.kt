@@ -5,6 +5,7 @@ import android.content.Context
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.graphics.DashPathEffect
 import android.graphics.Paint
 import android.graphics.Typeface
 import android.graphics.pdf.PdfDocument
@@ -99,6 +100,7 @@ import kotlinx.coroutines.tasks.await
 import java.util.Date
 import android.util.Log
 import androidx.compose.foundation.text.KeyboardOptions
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 
 // --- INICIO DE CLASES DE DATOS Y CONSTANTES (Mantén estas definiciones UNA SOLA VEZ) ---
@@ -184,44 +186,66 @@ fun AnalysisScreen(
     val selectedPeriodDays by viewModel.selectedPeriodDays.collectAsState()
     var selectedAnalysisTab by remember { mutableStateOf(AnalysisTabType.GLUCOSE) }
 
-    // Estado para las Observaciones Clínicas que se guardarán en Firestore
-    var clinicalNotes by remember { mutableStateOf("") }
+    // Estado para las Observaciones Clínicas (persistente en recomposiciones y recreaciones)
+    var clinicalNotes by rememberSaveable { mutableStateOf("") }
+
     val firestoreDb = remember { FirebaseFirestore.getInstance() }
     val userId = FirebaseAuth.getInstance().currentUser?.uid
 
-    LaunchedEffect(userId) {
-        // Cargar datos iniciales
-        userId?.let {
-            viewModel.loadData(it)
+// Para capturar siempre el valor más reciente dentro de callbacks
+    val currentNotesState = rememberUpdatedState(clinicalNotes)
 
-            // Cargar notas clínicas persistentes (usando el documento CLINICAL_NOTES)
-            try {
-                val notesDocRef = firestoreDb.collection("users").document(it)
-                    .collection("dailyRecords").document("CLINICAL_NOTES")
-                val document = notesDocRef.get().await()
-                if (document.exists()) {
-                    clinicalNotes = document.getString("notes") ?: ""
-                }
-            } catch (e: Exception) {
-                android.util.Log.e("AnalysisScreen", "Error loading clinical notes: ${e.message}")
+
+    LaunchedEffect(userId) {
+        if (userId == null) return@LaunchedEffect
+
+        // Cargar datos iniciales del ViewModel
+        viewModel.loadData(userId)
+
+        // Cargar notas clínicas persistentes
+        runCatching {
+            val notesDocRef = firestoreDb.collection("users")
+                .document(userId)
+                .collection("dailyRecords")
+                .document("CLINICAL_NOTES")
+
+            val document = notesDocRef.get().await()
+            if (document.exists()) {
+                clinicalNotes = document.getString("notes") ?: ""
             }
+        }.onFailure { e ->
+            android.util.Log.e("AnalysisScreen", "Error loading clinical notes", e)
         }
     }
 
-    // Lógica para guardar las notas clínicas
+// Lógica para guardar las notas clínicas
     val onSaveClinicalNotes: () -> Unit = {
-        userId?.let { uid ->
-            val notesDocRef = firestoreDb.collection("users").document(uid)
-                .collection("dailyRecords").document("CLINICAL_NOTES")
+        if (userId == null) {
+            Toast.makeText(context, "Usuario no autenticado.", Toast.LENGTH_SHORT).show()
+        } else {
+            val notesText = currentNotesState.value.trim()
+            if (notesText.isEmpty()) {
+                Toast.makeText(context, "Las notas están vacías, no se guardaron.", Toast.LENGTH_SHORT).show()
+            } else {
+                val notesDocRef = firestoreDb.collection("users")
+                    .document(userId)
+                    .collection("dailyRecords")
+                    .document("CLINICAL_NOTES")
 
-            // Guardar solo el campo de notas para persistencia
-            notesDocRef.set(mapOf("notes" to clinicalNotes, "lastUpdated" to Date()), SetOptions.merge())
-                .addOnSuccessListener {
-                    Toast.makeText(context, "Observaciones clínicas guardadas.", Toast.LENGTH_SHORT).show()
-                }
-                .addOnFailureListener { e ->
-                    Toast.makeText(context, "Error al guardar notas: ${e.message}", Toast.LENGTH_LONG).show()
-                }
+                val data = mapOf(
+                    "notes" to notesText,
+                    "lastUpdated" to Date()
+                )
+
+                notesDocRef.set(data, SetOptions.merge())
+                    .addOnSuccessListener {
+                        Toast.makeText(context, "Observaciones clínicas guardadas.", Toast.LENGTH_SHORT).show()
+                    }
+                    .addOnFailureListener { e ->
+                        Toast.makeText(context, "Error al guardar notas: ${e.message}", Toast.LENGTH_LONG).show()
+                        android.util.Log.e("AnalysisScreen", "Error saving clinical notes", e)
+                    }
+            }
         }
     }
 
@@ -399,14 +423,12 @@ fun AnalysisScreen(
                 medications,
                 glucoseStatsForPeriod,
                 filteredDailyRecords,
-                recentNotes,
-                symptomFrequency,
                 activitySummary,
                 dietaryHabitsSummary,
                 medicationAdherenceSummary,
                 selectedPeriodText,
                 selectedPeriodDays,
-                clinicalNotes // Pasar las notas clínicas persistentes
+                clinicalNotes // notas clínicas persistentes
             )
             val shareIntent = Intent(Intent.ACTION_SEND).apply {
                 type = "application/pdf"
@@ -1148,21 +1170,19 @@ fun GlucoseSummaryTable(recordsForPeriod: List<DailyRecordData>) {
 
 @Composable
 fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
-    val validGlucoseRecordsByDay = remember(records) {
+    // Expandir todas las lecturas de glucosa (no promediar)
+    val validGlucoseRecords = remember(records) {
         records
             .filter { it.glucoseReadings.isNotEmpty() }
-            .groupBy { it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() }
-            .mapValues { (_, dailyRecords) ->
-                val averageValue = dailyRecords
-                    .flatMap { it.glucoseReadings }
-                    .map { it.value.toFloat() }
-                    .average().toFloat()
-                Pair(dailyRecords.first().date, averageValue)
+            .flatMap { record ->
+                record.glucoseReadings.map { reading ->
+                    Pair(record.date, reading.value.toFloat())
+                }
             }
-            .values.sortedBy { it.first.time }
+            .sortedBy { it.first.time }
     }
 
-    if (validGlucoseRecordsByDay.isEmpty()) {
+    if (validGlucoseRecords.isEmpty()) {
         Box(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1177,8 +1197,8 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
     }
 
     val today = LocalDate.now()
-    val earliestDateInRecords = validGlucoseRecordsByDay.first().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-    val latestDateInRecords = validGlucoseRecordsByDay.last().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+    val earliestDateInRecords = validGlucoseRecords.first().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+    val latestDateInRecords = validGlucoseRecords.last().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
 
     val displayStartDate = if (daysInPeriod == Int.MAX_VALUE) {
         earliestDateInRecords
@@ -1194,15 +1214,16 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
     val paddingHorizontal = 32.dp
     val paddingVertical = 20.dp
 
-    val minGlucoseRaw = validGlucoseRecordsByDay.minOfOrNull { it.second } ?: GLUCOSE_NORMAL_MIN_AN
-    val maxGlucoseRaw = validGlucoseRecordsByDay.maxOfOrNull { it.second } ?: GLUCOSE_HYPERGLYCEMIA_THRESHOLD_AN
+    val minGlucoseRaw = validGlucoseRecords.minOfOrNull { it.second } ?: GLUCOSE_NORMAL_MIN_AN
+    val maxGlucoseRaw = validGlucoseRecords.maxOfOrNull { it.second } ?: GLUCOSE_HYPERGLYCEMIA_THRESHOLD_AN
 
     val yMinChart = min(GLUCOSE_HYPOGLYCEMIA_THRESHOLD_AN - 20f, minGlucoseRaw - 20f).coerceAtLeast(0f)
     val yMaxChart = max(GLUCOSE_SEVERE_HYPERGLYCEMIA_THRESHOLD_AN + 20f, maxGlucoseRaw + 20f)
-    val yRange = yMaxChart - yMinChart // Definición de yRange aquí
+    val yRange = yMaxChart - yMinChart
 
-    val chartPoints = remember(validGlucoseRecordsByDay, displayStartDate) {
-        validGlucoseRecordsByDay.mapNotNull { (recordDate, value) ->
+    // Convertir lecturas a puntos relativos en el eje X
+    val chartPoints = remember(validGlucoseRecords, displayStartDate) {
+        validGlucoseRecords.mapNotNull { (recordDate, value) ->
             val recordLocalDate = recordDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
             if (!recordLocalDate.isBefore(displayStartDate) && !recordLocalDate.isAfter(displayEndDate)) {
                 val dayRelative = ChronoUnit.DAYS.between(displayStartDate, recordLocalDate).toInt()
@@ -1226,7 +1247,6 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
         ) {
             val canvasWidth = size.width
             val canvasHeight = size.height
-            val xRange = if (totalDaysToDisplay > 1) totalDaysToDisplay - 1 else 1
             val yValueToPx = if (yRange > 0) canvasHeight / yRange else 0f
 
             val dashPath = PathEffect.dashPathEffect(floatArrayOf(10f, 10f), 0f)
@@ -1245,40 +1265,44 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
                 }
             }
 
+            // Líneas de referencia
             drawHorizontalReferenceLine(GLUCOSE_NORMAL_MIN_AN, GlucoseNormalColor)
             drawHorizontalReferenceLine(GLUCOSE_NORMAL_MAX_AN, GlucoseNormalColor)
             drawHorizontalReferenceLine(GLUCOSE_HYPERGLYCEMIA_THRESHOLD_AN, GlucoseHighColor)
             drawHorizontalReferenceLine(GLUCOSE_HYPOGLYCEMIA_THRESHOLD_AN, GlucoseLowColor)
 
-            val xStepPx = canvasWidth / (chartPoints.size - 1).coerceAtLeast(1)
+            // Distribuir puntos en el eje X
+            val xStepPx = if (totalDaysToDisplay > 1) canvasWidth / (totalDaysToDisplay - 1) else canvasWidth
             val mappedChartPoints = chartPoints.mapNotNull { (dayRelative, glucoseValue) ->
                 val xPx = dayRelative * xStepPx
                 val yPx = canvasHeight - ((glucoseValue - yMinChart) * yValueToPx)
                 if (yPx.isFinite()) Offset(xPx, yPx) else null
             }
 
-
+            // Dibujar líneas entre puntos
             if (mappedChartPoints.size >= 2) {
                 for (i in 0 until mappedChartPoints.size - 1) {
                     drawLine(
                         color = PrimaryBlue,
                         start = mappedChartPoints[i],
                         end = mappedChartPoints[i + 1],
-                        strokeWidth = 6f,
+                        strokeWidth = 4f,
                         cap = androidx.compose.ui.graphics.StrokeCap.Round
                     )
                 }
             }
 
+            // Dibujar puntos
             mappedChartPoints.forEach { point ->
                 drawCircle(
                     color = PrimaryBlue,
-                    radius = 10f,
+                    radius = 8f,
                     center = point
                 )
             }
         }
 
+        // Eje Y
         Column(
             modifier = Modifier
                 .fillMaxHeight()
@@ -1295,6 +1319,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
             }
         }
 
+        // Eje X
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -1308,12 +1333,6 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
             val labelInterval = max(1, totalDays / xAxisLabelsCount)
 
             val effectiveLabels = (0 until totalDays).filter { it % labelInterval == 0 }
-            if (totalDays > 0 && totalDays % labelInterval != 0) {
-                if (!effectiveLabels.contains(totalDays - 1)) {
-                    effectiveLabels + (totalDays - 1)
-                }
-            }
-
             effectiveLabels.forEach { dayOffset ->
                 val labelDate = displayStartDate.plusDays(dayOffset.toLong())
                 val formatter = when {
@@ -1330,7 +1349,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
                 )
             }
         }
-
+        // Leyenda
         Row(
             modifier = Modifier
                 .align(Alignment.TopEnd)
@@ -1345,6 +1364,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text("Glucosa", fontSize = 12.sp, color = TextDark)
+
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
@@ -1354,6 +1374,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text("Rango Normal", fontSize = 12.sp, color = TextDark)
+
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
@@ -1363,6 +1384,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
             )
             Spacer(modifier = Modifier.width(4.dp))
             Text("Umbral Alto", fontSize = 12.sp, color = TextDark)
+
             Spacer(modifier = Modifier.width(8.dp))
             Box(
                 modifier = Modifier
@@ -1375,6 +1397,7 @@ fun GlucoseLineChart(records: List<DailyRecordData>, daysInPeriod: Int) {
         }
     }
 }
+
 
 
 fun generateMedicalReportText(
@@ -1557,363 +1580,389 @@ fun generateMedicalReportText(
 
 // CLASE PDFGENERATOR
 class PdfGenerator(private val context: Context) {
+
+    private val pageHeight = 1120
+    private val pageWidth = 792
+    private val margin = 40f
+    private val lineHeight = 18f
+
+    // Tipografías centralizadas
+    private val fontTitle = Paint().apply {
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        textSize = 24f
+        color = android.graphics.Color.DKGRAY   // ✅ usa la clase de Android
+    }
+
+    private val fontSectionTitle = Paint().apply {
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
+        textSize = 16f
+        color = PrimaryBlue.toArgb()            // ✅ convierte Compose Color a Int
+    }
+
+    private val fontText = TextPaint().apply {
+        typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
+        textSize = 14f
+        color = android.graphics.Color.BLACK    // ✅ usa la clase de Android
+    }
     fun createPdf(
         userProfile: UserProfile,
         medications: List<MedicationData>,
         glucoseStats: GlucoseStats,
         recordsForPeriod: List<DailyRecordData>,
-        recentNotes: String,
-        symptomFrequency: String,
         activitySummary: ActivitySummary,
         dietaryHabitsSummary: DietaryHabitsSummary,
         medicationAdherenceSummary: MedicationAdherenceSummary,
         selectedPeriodText: String,
         selectedPeriodDays: Int,
-        clinicalNotes: String // NUEVO PARÁMETRO
+        clinicalNotes: String
     ): Uri {
-        val pageHeight = 1120
-        val pageWidth = 792
         val pdfDocument = PdfDocument()
         val pageInfo = PdfDocument.PageInfo.Builder(pageWidth, pageHeight, 1).create()
+
         var page = pdfDocument.startPage(pageInfo)
         var canvas = page.canvas
-
-        val margin = 40f
         var yPos = margin
-        val xPos = margin
-
-        val fontTitle = Paint().apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            textSize = 24f
-            color = android.graphics.Color.DKGRAY
-        }
-        val fontSubtitle = Paint().apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            textSize = 18f
-            color = android.graphics.Color.BLACK
-        }
-        val fontSectionTitle = Paint().apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.BOLD)
-            textSize = 16f
-            color = PrimaryBlue.toArgb()
-        }
-        val fontText = TextPaint().apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            textSize = 14f
-            color = android.graphics.Color.BLACK
-        }
-        val fontTableCell = Paint().apply {
-            typeface = Typeface.create(Typeface.SANS_SERIF, Typeface.NORMAL)
-            textSize = 12f
-            color = android.graphics.Color.BLACK
-        }
-
-        val lineHeight = 18f
-
-        // Encabezado
-        yPos += lineHeight
-        canvas.drawText("Informe Clínico de Diabetes", xPos, yPos, fontTitle)
-        yPos += lineHeight + 5f
-        canvas.drawText("Generado el: ${LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Período de Análisis: $selectedPeriodText", xPos, yPos, fontText)
-        yPos += lineHeight * 2
-
-        // Datos del Paciente
-        if (yPos > pageHeight - margin) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Datos del Paciente", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("---------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Nombre: ${userProfile.name}", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Edad: ${userProfile.age} años", xPos, yPos, fontText)
-        yPos += lineHeight
-        userProfile.diagnosisDate?.let {
-            canvas.drawText("Fecha Diagnóstico: ${it.toInstant().atZone(ZoneId.systemDefault()).toLocalDate().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}", xPos, yPos, fontText)
-            yPos += lineHeight
-        }
-        canvas.drawText("IMC: ${String.format(Locale.US, "%.2f", userProfile.bmi)} (${userProfile.bmiCategory})", xPos, yPos, fontText)
-        yPos += lineHeight * 2
-
-        // Tratamiento Farmacológico
-        if (yPos > pageHeight - (medications.size * lineHeight) - 50f) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Tratamiento Farmacológico:", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        if (medications.isNotEmpty()) {
-            medications.forEachIndexed { index, medication ->
-                val text = "${index + 1}. ${medication.name} ${medication.dose} ${medication.unit} (Horario: ${medication.time}, Frecuencia: ${medication.frequency})"
-                canvas.drawText(text, xPos + 10, yPos, fontText)
-                yPos += lineHeight
-            }
-        } else {
-            canvas.drawText("Ningún tratamiento registrado.", xPos + 10, yPos, fontText)
-            yPos += lineHeight
-        }
-        yPos += lineHeight * 2
-
-        // Métricas de Glucosa
-        if (yPos > pageHeight - margin) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Métricas Clave de Glucosa ($selectedPeriodText)", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("-------------------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-        if (glucoseStats.totalReadings > 0) {
-            canvas.drawText("Promedio: ${String.format(Locale.US, "%.1f", glucoseStats.average)} mg/dL", xPos, yPos, fontText)
-            yPos += lineHeight
-            canvas.drawText("Desviación Estándar: ${String.format(Locale.US, "%.1f", glucoseStats.stdDev)} mg/dL", xPos, yPos, fontText)
-            yPos += lineHeight
-            canvas.drawText("Coeficiente de Variación (CV): ${String.format(Locale.US, "%.1f", glucoseStats.cv)} %", xPos, yPos, fontText)
-            yPos += lineHeight
-            canvas.drawText("TIR (${GLUCOSE_NORMAL_MIN_AN}-${GLUCOSE_NORMAL_MAX_AN} mg/dL): ${String.format(Locale.US, "%.1f", glucoseStats.tir)}%", xPos, yPos, fontText)
-            yPos += lineHeight
-            canvas.drawText("TAR (>${GLUCOSE_NORMAL_MAX_AN} mg/dL): ${String.format(Locale.US, "%.1f", glucoseStats.tar)}%", xPos, yPos, fontText)
-            yPos += lineHeight
-            canvas.drawText("TBR (<${GLUCOSE_NORMAL_MIN_AN} mg/dL): ${String.format(Locale.US, "%.1f", glucoseStats.tbr)}%", xPos, yPos, fontText)
-            yPos += lineHeight * 2
-        } else {
-            canvas.drawText("No hay registros de glucosa para este período.", xPos, yPos, fontText)
-            yPos += lineHeight * 2
-        }
-
-        // Gráfico de Glucosa
-        if (yPos > pageHeight - 300f) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Gráfico de Tendencia de Glucosa", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight + 10f
-
-        val chartWidth = (pageWidth - 2 * margin).toInt()
-        val chartHeight = 250
-        val chartBitmap = createGlucoseChartBitmap(recordsForPeriod, selectedPeriodDays, chartWidth, chartHeight)
-        canvas.drawBitmap(chartBitmap, xPos, yPos, null)
-        yPos += chartHeight + lineHeight * 2
-
-        // Adherencia a la Medicación
-        if (yPos > pageHeight - margin) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Adherencia a la Medicación", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("---------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Porcentaje de Adherencia (Estimado): ${medicationAdherenceSummary.adherencePercentage}", xPos, yPos, fontText)
-        yPos += lineHeight
-        // Usar StaticLayout para notas largas
-        val adherenceNoteLayout = StaticLayout.Builder.obtain(medicationAdherenceSummary.note, 0, medicationAdherenceSummary.note.length,
-            fontText, pageWidth - (2 * margin).toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .build()
-        canvas.translate(xPos, yPos)
-        adherenceNoteLayout.draw(canvas)
-        canvas.translate(-xPos, -yPos)
-        yPos += adherenceNoteLayout.height + lineHeight * 2
-
-        // Resumen de Actividad
-        if (yPos > pageHeight - margin) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Resumen de Actividad Física", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("-----------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Total de minutos activos: ${activitySummary.totalMinutes} minutos", xPos, yPos, fontText)
-        yPos += lineHeight
-        val activitiesLayout = StaticLayout.Builder.obtain("Tipos de actividad: ${activitySummary.uniqueActivities.ifEmpty { "Ninguno" }}", 0, ("Tipos de actividad: ${activitySummary.uniqueActivities.ifEmpty { "Ninguno" }}").length,
-            fontText, pageWidth - (2 * margin).toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .build()
-        canvas.translate(xPos, yPos)
-        activitiesLayout.draw(canvas)
-        canvas.translate(-xPos, -yPos)
-        yPos += activitiesLayout.height + lineHeight
-
-        // Resumen de Hábitos Alimenticios
-        if (yPos > pageHeight - 150f) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Resumen de Hábitos Alimenticios", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("---------------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-        canvas.drawText("Calorías totales registradas: ${dietaryHabitsSummary.totalCaloriesRecorded} Cal", xPos, yPos, fontText)
-        yPos += lineHeight
-        val foodFreqText = "Tipos de alimento frecuentes:\n${dietaryHabitsSummary.foodTypeFrequency.ifEmpty { "- Ninguno" }}"
-        val foodFreqLayout = StaticLayout.Builder.obtain(foodFreqText, 0, foodFreqText.length,
-            fontText, pageWidth - (2 * margin).toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .build()
-        canvas.translate(xPos, yPos)
-        foodFreqLayout.draw(canvas)
-        canvas.translate(-xPos, -yPos)
-        yPos += foodFreqLayout.height + lineHeight
-
-        // Observaciones Clínicas (Notas Persistentes) - MEJORA CLAVE
-        if (yPos > pageHeight - 150f) {
-            pdfDocument.finishPage(page)
-            page = pdfDocument.startPage(pageInfo)
-            canvas = page.canvas
-            yPos = margin
-        }
-        canvas.drawText("Observaciones Clínicas", xPos, yPos, fontSectionTitle)
-        yPos += lineHeight
-        canvas.drawText("---------------------------------", xPos, yPos, fontText)
-        yPos += lineHeight
-
-        // Usar el texto de las notas
-        val notesText = clinicalNotes.ifEmpty { "No se han registrado observaciones clínicas." }
-        val clinicalNotesLayout = StaticLayout.Builder.obtain(notesText, 0, notesText.length,
-            fontText, pageWidth - (2 * margin).toInt())
-            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
-            .build()
-        canvas.translate(xPos, yPos)
-        clinicalNotesLayout.draw(canvas)
-        canvas.translate(-xPos, -yPos)
-        yPos += clinicalNotesLayout.height + lineHeight
-
-        // Finalizar el documento
+    // Cuando necesites una nueva página:
         pdfDocument.finishPage(page)
+        page = pdfDocument.startPage(pageInfo)   // ✅ reasignación, no redeclaración
+        canvas = page.canvas                     // ✅ reasignación
+        yPos = margin                            // ✅ reinicia posición
 
-        val documentsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
-        val file = File(documentsDir, "Informe_Medico_${userProfile.name}_${LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))}.pdf")
-        try {
-            pdfDocument.writeTo(FileOutputStream(file))
-            Toast.makeText(context, "PDF guardado en Descargas", Toast.LENGTH_LONG).show()
-        } catch (e: IOException) {
-            Toast.makeText(context, "Error al guardar el PDF: ${e.message}", Toast.LENGTH_LONG).show()
-        }
+
+    // Encabezado
+        yPos = drawHeader(canvas, yPos, selectedPeriodText)
+
+// Datos del paciente
+        var ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawPatientData(canvas, yPos, userProfile)
+
+// Tratamiento
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, medications.size * lineHeight + 100f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawMedications(canvas, yPos, medications)
+
+// Métricas de glucosa
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawGlucoseMetrics(canvas, yPos, glucoseStats, selectedPeriodText)
+
+// Gráfico de glucosa
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 300f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawGlucoseChart(canvas, yPos, recordsForPeriod, selectedPeriodDays)
+
+// Adherencia
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawMedicationAdherence(canvas, yPos, medicationAdherenceSummary)
+
+// Actividad
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawActivitySummary(canvas, yPos, activitySummary)
+
+// Hábitos alimenticios
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawDietaryHabits(canvas, yPos, dietaryHabitsSummary)
+
+// Observaciones clínicas
+        ctx = ensureSpace(pdfDocument, pageInfo, page, yPos, 200f)
+        page = ctx.page
+        canvas = ctx.canvas
+        yPos = ctx.yPos
+        yPos = drawClinicalNotes(canvas, yPos, clinicalNotes)
+
+        // Finalizar documento
+        pdfDocument.finishPage(page)
+        val file = savePdf(pdfDocument, userProfile.name)
         pdfDocument.close()
 
         return FileProvider.getUriForFile(context, "${context.packageName}.provider", file)
     }
 
-    private fun createGlucoseChartBitmap(records: List<DailyRecordData>, daysInPeriod: Int, width: Int, height: Int): Bitmap {
-        // Lógica para crear el Bitmap del gráfico (se mantiene igual a la versión mejorada)
-        val validGlucoseRecordsByDay = records
-            .filter { it.glucoseReadings.isNotEmpty() }
-            .groupBy { it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() }
-            .mapValues { (_, dailyRecords) ->
-                val averageValue = dailyRecords
-                    .flatMap { it.glucoseReadings }
-                    .map { it.value.toFloat() }
-                    .average().toFloat()
-                Pair(dailyRecords.first().date, averageValue)
-            }
-            .values.sortedBy { it.first.time }
+    // -------------------------
+    // Funciones privadas por sección
+    // -------------------------
 
-        if (validGlucoseRecordsByDay.isEmpty()) {
-            val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-            val canvas = Canvas(bitmap)
-            canvas.drawColor(android.graphics.Color.WHITE)
-            return bitmap
+    private fun drawHeader(canvas: Canvas, yPos: Float, period: String): Float {
+        var y = yPos
+        canvas.drawText("Informe Clínico de Diabetes", margin, y, fontTitle)
+        y += lineHeight + 5f
+        canvas.drawText("Generado el: ${LocalDate.now().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}", margin, y, fontText)
+        y += lineHeight
+        canvas.drawText("Período de Análisis: $period", margin, y, fontText)
+        return y + lineHeight * 2
+    }
+
+    private fun drawPatientData(canvas: Canvas, yPos: Float, userProfile: UserProfile): Float {
+        var y = yPos
+        canvas.drawText("Datos del Paciente", margin, y, fontSectionTitle)
+        y += lineHeight
+        canvas.drawText("Nombre: ${userProfile.name}", margin, y, fontText)
+        y += lineHeight
+        canvas.drawText("Edad: ${userProfile.age} años", margin, y, fontText)
+        y += lineHeight
+        userProfile.diagnosisDate?.let {
+            canvas.drawText("Diagnóstico: ${it.toInstant().atZone(ZoneId.systemDefault()).toLocalDate().format(DateTimeFormatter.ofPattern("dd/MM/yyyy"))}", margin, y, fontText)
+            y += lineHeight
         }
+        canvas.drawText("IMC: ${String.format(Locale.US, "%.2f", userProfile.bmi)} (${userProfile.bmiCategory})", margin, y, fontText)
+        return y + lineHeight * 2
+    }
 
-        val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
-        val canvas = Canvas(bitmap)
-        canvas.drawColor(android.graphics.Color.WHITE)
-
-        val today = LocalDate.now()
-        val earliestDateInRecords = validGlucoseRecordsByDay.first().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-        val latestDateInRecords = validGlucoseRecordsByDay.last().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-
-        val displayStartDate = if (daysInPeriod == Int.MAX_VALUE) {
-            earliestDateInRecords
+    private fun drawMedications(canvas: Canvas, yPos: Float, medications: List<MedicationData>): Float {
+        var y = yPos
+        canvas.drawText("Tratamiento Farmacológico", margin, y, fontSectionTitle)
+        y += lineHeight
+        if (medications.isNotEmpty()) {
+            medications.forEachIndexed { index, med ->
+                val text = "${index + 1}. ${med.name} ${med.dose}${med.unit} (Horario: ${med.time}, Frecuencia: ${med.frequency})"
+                canvas.drawText(text, margin + 10, y, fontText)
+                y += lineHeight
+            }
         } else {
-            maxOf(
-                today.minusDays(daysInPeriod.toLong() - 1),
-                earliestDateInRecords
-            )
+            canvas.drawText("Ningún tratamiento registrado.", margin + 10, y, fontText)
+            y += lineHeight
         }
-        val displayEndDate = latestDateInRecords
+        return y + lineHeight * 2
+    }
 
-        val totalDaysToDisplay = ChronoUnit.DAYS.between(displayStartDate, displayEndDate).toInt() + 1
-        val margin = 20f
-        val chartWidth = width.toFloat() - 2 * margin
-        val chartHeight = height.toFloat() - 2 * margin
-
-        val minGlucoseRaw = validGlucoseRecordsByDay.minOfOrNull { it.second } ?: GLUCOSE_NORMAL_MIN_AN
-        val maxGlucoseRaw = validGlucoseRecordsByDay.maxOfOrNull { it.second } ?: GLUCOSE_HYPERGLYCEMIA_THRESHOLD_AN
-
-        val yMinChart = min(GLUCOSE_HYPOGLYCEMIA_THRESHOLD_AN - 20f, minGlucoseRaw - 20f).coerceAtLeast(0f)
-        val yMaxChart = max(GLUCOSE_SEVERE_HYPERGLYCEMIA_THRESHOLD_AN + 20f, maxGlucoseRaw + 20f)
-        val yRange = yMaxChart - yMinChart
-
-        val chartPoints = validGlucoseRecordsByDay.mapNotNull { (recordDate, value) ->
-            val recordLocalDate = recordDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
-            if (!recordLocalDate.isBefore(displayStartDate) && !recordLocalDate.isAfter(displayEndDate)) {
-                val dayRelative = ChronoUnit.DAYS.between(displayStartDate, recordLocalDate).toInt()
-                Pair(dayRelative, value)
-            } else null
-        }.sortedBy { it.first }
-
-        val xStepPx = if (totalDaysToDisplay > 1) chartWidth / (totalDaysToDisplay - 1).toFloat() else 0f
-        val yValueToPx = if (yRange > 0) chartHeight / yRange else 0f
-
-        val dashPaint = Paint().apply {
-            style = Paint.Style.STROKE
-            pathEffect = android.graphics.DashPathEffect(floatArrayOf(10f, 10f), 0f)
-            strokeWidth = 2f
-            color = Color.Green.copy(alpha = 0.5f).toArgb()
+    private fun drawGlucoseMetrics(canvas: Canvas, yPos: Float, stats: GlucoseStats, period: String): Float {
+        var y = yPos
+        canvas.drawText("Métricas Clave de Glucosa ($period)", margin, y, fontSectionTitle)
+        y += lineHeight
+        if (stats.totalReadings > 0) {
+            canvas.drawText("Promedio: ${String.format(Locale.US, "%.1f", stats.average)} mg/dL", margin, y, fontText); y += lineHeight
+            canvas.drawText("Desviación Estándar: ${String.format(Locale.US, "%.1f", stats.stdDev)} mg/dL", margin, y, fontText); y += lineHeight
+            canvas.drawText("CV: ${String.format(Locale.US, "%.1f", stats.cv)} %", margin, y, fontText); y += lineHeight
+            canvas.drawText("TIR: ${String.format(Locale.US, "%.1f", stats.tir)}%", margin, y, fontText); y += lineHeight
+            canvas.drawText("TAR: ${String.format(Locale.US, "%.1f", stats.tar)}%", margin, y, fontText); y += lineHeight
+            canvas.drawText("TBR: ${String.format(Locale.US, "%.1f", stats.tbr)}%", margin, y, fontText); y += lineHeight
+        } else {
+            canvas.drawText("No hay registros de glucosa para este período.", margin, y, fontText)
+            y += lineHeight
         }
-        val yNormalMin = chartHeight - ((GLUCOSE_NORMAL_MIN_AN - yMinChart) * yValueToPx)
-        val yNormalMax = chartHeight - ((GLUCOSE_NORMAL_MAX_AN - yMinChart) * yValueToPx)
-        canvas.drawLine(margin, margin + yNormalMin, margin + chartWidth, margin + yNormalMin, dashPaint)
-        canvas.drawLine(margin, margin + yNormalMax, margin + chartWidth, margin + yNormalMax, dashPaint)
+        return y + lineHeight * 2
+    }
 
-        val linePaint = Paint().apply {
-            color = PrimaryBlue.toArgb()
-            strokeWidth = 6f
-            style = Paint.Style.STROKE
-            isAntiAlias = true
-        }
+    private fun drawGlucoseChart(canvas: Canvas, yPos: Float, records: List<DailyRecordData>, days: Int): Float {
+        var y = yPos
+        canvas.drawText("Gráfico de Tendencia de Glucosa", margin, y, fontSectionTitle)
+        y += lineHeight + 10f
+        val chartWidth = (pageWidth - 2 * margin).toInt()
+        val chartHeight = 250
+        val chartBitmap = createGlucoseChartBitmap(records, days, chartWidth, chartHeight)
+        canvas.drawBitmap(chartBitmap, margin, y, null)
+        return y + chartHeight + lineHeight * 2
+    }
 
-        if (chartPoints.size >= 2) {
-            for (i in 0 until chartPoints.size - 1) {
-                val startX = margin + chartPoints[i].first * xStepPx
-                val startY = margin + chartHeight - ((chartPoints[i].second - yMinChart) * yValueToPx)
-                val endX = margin + chartPoints[i + 1].first * xStepPx
-                val endY = margin + chartHeight - ((chartPoints[i + 1].second - yMinChart) * yValueToPx)
-                canvas.drawLine(startX, startY, endX, endY, linePaint)
-            }
-        }
+    private fun drawMedicationAdherence(canvas: Canvas, yPos: Float, summary: MedicationAdherenceSummary): Float {
+        var y = yPos
+        canvas.drawText("Adherencia a la Medicación", margin, y, fontSectionTitle)
+        y += lineHeight
+        canvas.drawText("Porcentaje de Adherencia: ${summary.adherencePercentage}", margin, y, fontText)
+        y += lineHeight
+        y += drawWrappedText(canvas, summary.note, y)
+        return y + lineHeight
+    }
 
-        val pointPaint = Paint().apply {
-            color = PrimaryBlue.toArgb()
-            isAntiAlias = true
-        }
-        chartPoints.forEach { (dayRelative, value) ->
-            val x = margin + dayRelative * xStepPx
-            val y = margin + chartHeight - ((value - yMinChart) * yValueToPx)
-            canvas.drawCircle(x, y, 10f, pointPaint)
-        }
+    private fun drawActivitySummary(canvas: Canvas, yPos: Float, summary: ActivitySummary): Float {
+        var y = yPos
+        canvas.drawText("Resumen de Actividad Física", margin, y, fontSectionTitle)
+        y += lineHeight
+        canvas.drawText("Total de minutos activos: ${summary.totalMinutes}", margin, y, fontText)
+        y += lineHeight
 
-        return bitmap
+        val activitiesText = "Tipos de actividad: ${summary.uniqueActivities.ifEmpty { "Ninguno" }}"
+        y += drawWrappedText(canvas, activitiesText, y)
+        return y + lineHeight
+    }
+
+    private fun drawDietaryHabits(canvas: Canvas, yPos: Float, summary: DietaryHabitsSummary): Float {
+        var y = yPos
+        canvas.drawText("Resumen de Hábitos Alimenticios", margin, y, fontSectionTitle)
+        y += lineHeight
+        canvas.drawText("Calorías totales registradas: ${summary.totalCaloriesRecorded} Cal", margin, y, fontText)
+        y += lineHeight
+
+        val foodFreqText = "Tipos de alimento frecuentes:\n${summary.foodTypeFrequency.ifEmpty { "- Ninguno" }}"
+        y += drawWrappedText(canvas, foodFreqText, y)
+        return y + lineHeight
+    }
+
+    private fun drawClinicalNotes(canvas: Canvas, yPos: Float, notes: String): Float {
+        var y = yPos
+        canvas.drawText("Observaciones Clínicas", margin, y, fontSectionTitle)
+        y += lineHeight
+
+        val notesText = notes.ifEmpty { "No se han registrado observaciones clínicas." }
+        y += drawWrappedText(canvas, notesText, y)
+        return y + lineHeight
+    }
+
+    // -------------------------
+    // Funciones auxiliares
+    // -------------------------
+
+    private fun drawWrappedText(canvas: Canvas, text: String, yPos: Float): Float {
+        val layout = StaticLayout.Builder.obtain(text, 0, text.length, fontText, pageWidth - (2 * margin).toInt())
+            .setAlignment(Layout.Alignment.ALIGN_NORMAL)
+            .build()
+        canvas.save()
+        canvas.translate(margin, yPos)
+        layout.draw(canvas)
+        canvas.restore()
+        return layout.height.toFloat()
+    }
+
+    data class PageContext(
+        val page: PdfDocument.Page,
+        val canvas: Canvas,
+        val yPos: Float
+    )
+
+    private fun ensureSpace(
+        pdfDocument: PdfDocument,
+        pageInfo: PdfDocument.PageInfo,
+        page: PdfDocument.Page,
+        yPos: Float,
+        requiredSpace: Float
+    ): PageContext {
+        return if (yPos > pageHeight - requiredSpace) {
+            pdfDocument.finishPage(page)
+            val newPage = pdfDocument.startPage(pageInfo)
+            newPage.canvas.drawColor(android.graphics.Color.WHITE)
+            PageContext(newPage, newPage.canvas, margin)
+        } else {
+            PageContext(page, page.canvas, yPos)
+        }
+    }
+
+
+    private fun savePdf(pdfDocument: PdfDocument, patientName: String): File {
+        val documentsDir = context.getExternalFilesDir(Environment.DIRECTORY_DOWNLOADS)
+        val file = File(documentsDir, "Informe_Medico_${patientName}_${LocalDate.now().format(DateTimeFormatter.ofPattern("yyyyMMdd"))}.pdf")
+        try {
+            pdfDocument.writeTo(FileOutputStream(file))
+            Toast.makeText(context, "PDF guardado en Descargas", Toast.LENGTH_LONG).show()
+        } catch (e: IOException) {
+            Toast.makeText(context, "Error al guardar PDF: ${e.message}", Toast.LENGTH_LONG).show()
+        }
+        return file
     }
 }
+
+private fun createGlucoseChartBitmap(
+    records: List<DailyRecordData>,
+    daysInPeriod: Int,
+    width: Int,
+    height: Int
+): Bitmap {
+    val validGlucoseRecordsByDay = records
+        .filter { it.glucoseReadings.isNotEmpty() }
+        .groupBy { it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() }
+        .mapValues { (_, dailyRecords) ->
+            val averageValue = dailyRecords
+                .flatMap { it.glucoseReadings }
+                .map { it.value.toFloat() }
+                .average().toFloat()
+            Pair(dailyRecords.first().date, averageValue)
+        }
+        .values.sortedBy { it.first.time }
+
+    val bitmap = Bitmap.createBitmap(width, height, Bitmap.Config.ARGB_8888)
+    val canvas = Canvas(bitmap)
+    canvas.drawColor(android.graphics.Color.WHITE)
+
+    if (validGlucoseRecordsByDay.isEmpty()) return bitmap
+
+    val today = LocalDate.now()
+    val earliestDate = validGlucoseRecordsByDay.first().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+    val latestDate = validGlucoseRecordsByDay.last().first.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+
+    val displayStartDate = if (daysInPeriod == Int.MAX_VALUE) earliestDate
+    else maxOf(today.minusDays(daysInPeriod.toLong() - 1), earliestDate)
+    val displayEndDate = latestDate
+
+    val totalDays = ChronoUnit.DAYS.between(displayStartDate, displayEndDate).toInt() + 1
+    val margin = 40f
+    val chartWidth = width - 2 * margin
+    val chartHeight = height - 2 * margin
+
+    val minGlucoseRaw = validGlucoseRecordsByDay.minOfOrNull { it.second } ?: GLUCOSE_NORMAL_MIN_AN
+    val maxGlucoseRaw = validGlucoseRecordsByDay.maxOfOrNull { it.second } ?: GLUCOSE_HYPERGLYCEMIA_THRESHOLD_AN
+
+    val yMinChart = min(GLUCOSE_HYPOGLYCEMIA_THRESHOLD_AN - 20f, minGlucoseRaw - 20f).coerceAtLeast(0f)
+    val yMaxChart = max(GLUCOSE_SEVERE_HYPERGLYCEMIA_THRESHOLD_AN + 20f, maxGlucoseRaw + 20f)
+    val yRange = yMaxChart - yMinChart
+
+    val chartPoints = validGlucoseRecordsByDay.mapNotNull { (recordDate, value) ->
+        val recordLocalDate = recordDate.toInstant().atZone(ZoneId.systemDefault()).toLocalDate()
+        if (!recordLocalDate.isBefore(displayStartDate) && !recordLocalDate.isAfter(displayEndDate)) {
+            val dayRelative = ChronoUnit.DAYS.between(displayStartDate, recordLocalDate).toInt()
+            Pair(dayRelative, value)
+        } else null
+    }.sortedBy { it.first }
+
+    val xStepPx = if (totalDays > 1) chartWidth / (totalDays - 1) else chartWidth
+    val yValueToPx = if (yRange > 0) chartHeight / yRange else 0f
+
+    // Líneas de referencia (rango normal)
+    val dashPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        pathEffect = DashPathEffect(floatArrayOf(10f, 10f), 0f)
+        strokeWidth = 2f
+        color = android.graphics.Color.GRAY
+    }
+    val yNormalMin = chartHeight - ((GLUCOSE_NORMAL_MIN_AN - yMinChart) * yValueToPx)
+    val yNormalMax = chartHeight - ((GLUCOSE_NORMAL_MAX_AN - yMinChart) * yValueToPx)
+    canvas.drawLine(margin, margin + yNormalMin, margin + chartWidth, margin + yNormalMin, dashPaint)
+    canvas.drawLine(margin, margin + yNormalMax, margin + chartWidth, margin + yNormalMax, dashPaint)
+
+    // Línea de tendencia
+    val linePaint = Paint().apply {
+        color = PrimaryBlue.toArgb()
+        strokeWidth = 4f
+        style = Paint.Style.STROKE
+        isAntiAlias = true
+    }
+    for (i in 0 until chartPoints.size - 1) {
+        val startX = margin + chartPoints[i].first * xStepPx
+        val startY = margin + chartHeight - ((chartPoints[i].second - yMinChart) * yValueToPx)
+        val endX = margin + chartPoints[i + 1].first * xStepPx
+        val endY = margin + chartHeight - ((chartPoints[i + 1].second - yMinChart) * yValueToPx)
+        canvas.drawLine(startX, startY, endX, endY, linePaint)
+    }
+
+    // Puntos
+    val pointPaint = Paint().apply {
+        color = PrimaryBlue.toArgb()
+        style = Paint.Style.FILL
+        isAntiAlias = true
+    }
+    chartPoints.forEach { (dayRelative, value) ->
+        val x = margin + dayRelative * xStepPx
+        val y = margin + chartHeight - ((value - yMinChart) * yValueToPx)
+        canvas.drawCircle(x, y, 6f, pointPaint)
+    }
+
+    return bitmap
+}
+
+

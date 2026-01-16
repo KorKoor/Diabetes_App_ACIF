@@ -11,7 +11,9 @@ import androidx.core.content.ContextCompat
 import kotlin.random.Random
 
 class NotificationHelper(private val context: Context) {
-
+    fun cancelNotification(notificationId: Int) {
+        notificationManager.cancel(notificationId)
+    }
     private val notificationManager: NotificationManager =
         context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
 

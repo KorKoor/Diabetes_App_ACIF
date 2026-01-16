@@ -1,96 +1,225 @@
 package com.example.diabetes_app
 
+import android.app.AlarmManager
+import android.app.PendingIntent
 import android.content.Context
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
-import androidx.work.Data
+import android.content.Intent
+import android.os.Build
 import android.util.Log
 import com.example.diabetes_app.data.MedicationData
-import java.time.LocalTime
-import java.time.temporal.ChronoUnit
-import java.util.concurrent.TimeUnit
+import java.util.*
 
-// Nota: Mantenemos el nombre AlarmScheduler para no modificar tu MainActivity,
-// pero internamente, usa WorkManager.
 class AlarmScheduler(private val context: Context) {
 
-    private fun generateNotificationId(medicationName: String, time: String): Int {
-        // Usamos la combinación de nombre y hora como un ID de Request Code único para WorkManager
-        // Esto asegura que cada dosis tenga una tarea única.
-        return "${medicationName}-${time}".hashCode()
+    private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    companion object {
+        private const val TAG = "AlarmScheduler"
     }
 
     /**
-     * Calcula el retraso inicial en minutos entre la hora actual y la hora de la dosis.
-     * Si la hora ya pasó hoy, calcula el retraso hasta la misma hora de mañana.
+     * Genera un ID único para cada alarma según nombre y hora.
      */
-    private fun calculateInitialDelayMinutes(timeStr: String): Long {
-        val doseTime = try {
-            LocalTime.parse(timeStr)
-        } catch (e: Exception) {
-            Log.e("WorkScheduler", "Error parsing time: $timeStr")
-            return 0L
-        }
-
-        val now = LocalTime.now()
-        var delayMinutes = ChronoUnit.MINUTES.between(now, doseTime)
-
-        // Si el retraso es negativo (la hora ya pasó hoy), añade 24 horas (1440 minutos)
-        if (delayMinutes <= 0) {
-            delayMinutes += 24 * 60
-        }
-
-        return delayMinutes
+    private fun generateNotificationId(name: String, time: String): Int {
+        return "$name-$time".hashCode()
     }
 
     /**
-     * Programa una notificación utilizando WorkManager para que se ejecute diariamente
-     * a la hora de la dosis.
+     * Programa una alarma exacta para un medicamento.
+     * Se dispara 1 minuto antes de la hora configurada.
      */
     fun scheduleNotification(medication: MedicationData, time: String) {
         val notificationId = generateNotificationId(medication.name, time)
-        val initialDelayMinutes = calculateInitialDelayMinutes(time)
-        val uniqueWorkName = "medication_dose_${notificationId}" // Nombre único para la tarea
+        val (hour, minute) = parseHourMinute(time) ?: return
 
-        // 1. Crear los datos que WorkManager pasará al Worker (NotificationWorker)
-        val inputData = Data.Builder()
-            .putString("MEDICATION_NAME", medication.name)
-            .putString("NOTIFICATION_TITLE", "Recordatorio: ${medication.name} (${time})")
-            .putString("NOTIFICATION_MESSAGE", "¡Es hora de tomar tu dosis de ${medication.name} a las ${time}!")
-            .putInt("NOTIFICATION_ID", notificationId)
-            .build()
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("NOTIFICATION_TYPE", "MEDICATION")
+            putExtra("MEDICATION_NAME", medication.name)
+            putExtra("MEDICATION_TIME", time)
+            putExtra("NOTIFICATION_ID", notificationId)
+        }
 
-        // 2. Crear la solicitud de trabajo periódico (se repite cada 24 horas)
-        // WorkManager requiere un mínimo de 15 minutos para la repetición.
-        val notificationWorkRequest = PeriodicWorkRequestBuilder<NotificationWorker>(
-            repeatInterval = 24,
-            repeatIntervalTimeUnit = TimeUnit.HOURS
-        )
-            .setInitialDelay(initialDelayMinutes, TimeUnit.MINUTES)
-            .setInputData(inputData)
-            .addTag(uniqueWorkName)
-            .build()
-
-        // 3. Encolar la tarea. REPLACE garantiza que la alarma anterior se cancele si la editas.
-        WorkManager.getInstance(context).enqueueUniquePeriodicWork(
-            uniqueWorkName,
-            ExistingPeriodicWorkPolicy.REPLACE,
-            notificationWorkRequest
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        Log.d("WorkScheduler", "Scheduled WorkManager task: $uniqueWorkName for $time (Initial delay: $initialDelayMinutes min)")
+        val calendar = buildCalendar(hour, minute)
+
+        // 🔎 Verificación de permiso en Android 12+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+            if (!alarmManager.canScheduleExactAlarms()) {
+                val intentSettings = Intent(android.provider.Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM)
+                context.startActivity(intentSettings)
+                Log.e(TAG, "⚠️ El permiso SCHEDULE_EXACT_ALARM no está concedido")
+                return
+            }
+        }
+
+        try {
+            alarmManager.setExactAndAllowWhileIdle(
+                AlarmManager.RTC_WAKEUP,
+                calendar.timeInMillis,
+                pendingIntent
+            )
+            Log.d(TAG, "Alarma programada: ${medication.name} a las $time (1 min antes)")
+        } catch (e: SecurityException) {
+            Log.e(TAG, "Permiso SCHEDULE_EXACT_ALARM requerido en Android 12+", e)
+        }
+    }
+
+
+    /**
+     * Programa un recordatorio fijo de glucosa.
+     */
+    fun scheduleGlucoseCheck(id: Int, hour: Int, minute: Int) {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("NOTIFICATION_TYPE", "GLUCOSE")
+            putExtra("NOTIFICATION_ID", id)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            id,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val calendar = buildCalendar(hour, minute)
+
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, pendingIntent)
+        Log.d(TAG, "Chequeo de glucosa programado a las $hour:$minute (1 min antes, ID: $id)")
     }
 
     /**
-     * Cancela la tarea programada en WorkManager usando el nombre único.
+     * Programa un recordatorio de comida.
+     */
+    fun scheduleMealReminder(id: Int, hour: Int, minute: Int) {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("NOTIFICATION_TYPE", "MEAL")
+            putExtra("NOTIFICATION_ID", id)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            id,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val calendar = buildCalendar(hour, minute)
+
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, pendingIntent)
+        Log.d(TAG, "Recordatorio de comida programado a las $hour:$minute (1 min antes, ID: $id)")
+    }
+
+    /**
+     * Programa un recordatorio de actividad física.
+     */
+    fun scheduleActivityReminder(id: Int, hour: Int, minute: Int) {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            putExtra("NOTIFICATION_TYPE", "ACTIVITY")
+            putExtra("NOTIFICATION_ID", id)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            id,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+
+        val calendar = buildCalendar(hour, minute)
+
+        alarmManager.setExactAndAllowWhileIdle(AlarmManager.RTC_WAKEUP, calendar.timeInMillis, pendingIntent)
+        Log.d(TAG, "Recordatorio de actividad programado a las $hour:$minute (1 min antes, ID: $id)")
+    }
+
+    /**
+     * Cancela una alarma de medicamento.
      */
     fun cancelNotification(medication: MedicationData, time: String) {
         val notificationId = generateNotificationId(medication.name, time)
-        val uniqueWorkName = "medication_dose_${notificationId}"
+        val intent = Intent(context, AlarmReceiver::class.java)
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            notificationId,
+            intent,
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+        )
+        alarmManager.cancel(pendingIntent)
+        Log.d(TAG, "Alarma cancelada: ${medication.name} a las $time")
+    }
 
-        // WorkManager cancela la tarea usando su nombre único
-        WorkManager.getInstance(context).cancelUniqueWork(uniqueWorkName)
-        Log.d("WorkScheduler", "Cancelled WorkManager task: $uniqueWorkName")
+    /**
+     * Reprograma todas las alarmas (medicamentos, glucosa, comidas, actividad).
+     */
+    fun rescheduleAll(
+        medications: List<MedicationData>,
+        glucoseChecks: List<Pair<Int, Pair<Int, Int>>>,
+        meals: List<Pair<Int, Pair<Int, Int>>>,
+        activities: List<Pair<Int, Pair<Int, Int>>>
+    ) {
+        Log.d(TAG, "Rescheduling all alarms...")
+
+        // 🔹 Reprogramar medicamentos (usa 'time' en lugar de 'times')
+        medications.forEach { med ->
+            if (med.time.isNotEmpty()) {
+                scheduleNotification(med, med.time)
+            }
+        }
+
+        // 🔹 Reprogramar chequeos de glucosa
+        glucoseChecks.forEach { (id, hm) ->
+            val (hour, minute) = hm
+            scheduleGlucoseCheck(id, hour, minute)
+        }
+
+        // 🔹 Reprogramar comidas
+        meals.forEach { (id, hm) ->
+            val (hour, minute) = hm
+            scheduleMealReminder(id, hour, minute)
+        }
+
+        // 🔹 Reprogramar actividad física
+        activities.forEach { (id, hm) ->
+            val (hour, minute) = hm
+            scheduleActivityReminder(id, hour, minute)
+        }
+
+        Log.d(TAG, "✅ Todas las alarmas reprogramadas correctamente.")
+    }
+
+    /**
+     * Construye un Calendar seguro (1 min antes, nunca en el pasado).
+     */
+    private fun buildCalendar(hour: Int, minute: Int): Calendar {
+        return Calendar.getInstance().apply {
+            set(Calendar.HOUR_OF_DAY, hour)
+            set(Calendar.MINUTE, minute)
+            set(Calendar.SECOND, 0)
+
+            // 🔹 Restar 1 minuto
+            add(Calendar.MINUTE, -1)
+
+            // Si el resultado es antes de ahora, mover a mañana
+            if (before(Calendar.getInstance())) {
+                add(Calendar.DATE, 1)
+            }
+        }
+    }
+
+    /**
+     * Utilidad para parsear hora en formato HH:mm.
+     */
+    private fun parseHourMinute(time: String): Pair<Int, Int>? {
+        val parts = time.split(":")
+        if (parts.size != 2) return null
+        val hour = parts[0].toIntOrNull() ?: return null
+        val minute = parts[1].toIntOrNull() ?: return null
+        return Pair(hour, minute)
     }
 }

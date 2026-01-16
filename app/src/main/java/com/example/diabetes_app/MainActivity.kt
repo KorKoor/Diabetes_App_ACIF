@@ -5,6 +5,7 @@ package com.example.diabetes_app
 import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -112,6 +113,11 @@ import com.example.diabetes_app.R.style.CustomTimePickerDialogTheme // Importar 
 import androidx.compose.material.icons.filled.LocalFireDepartment
 import androidx.room.util.copy
 import java.text.SimpleDateFormat
+import android.content.pm.PackageManager
+import android.Manifest
+import androidx.activity.compose.setContent
+import androidx.core.app.ActivityCompat
+import androidx.core.content.ContextCompat
 
 // --- DEFINICIONES DE COLORES EN KOTLIN (se asume que R.color.* están definidos) ---
 val LightBlueCustom = Color(0xFFADD8E6)
@@ -183,22 +189,39 @@ class MainActivity : ComponentActivity() {
         firebaseAuth = FirebaseAuth.getInstance()
         firestoreDb = FirebaseFirestore.getInstance()
 
+        // Si no hay usuario autenticado, redirigir a login
         if (firebaseAuth.currentUser == null) {
-            val loginIntent = Intent(this, LoginActivity::class.java)
-            loginIntent.flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            val loginIntent = Intent(this, LoginActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+            }
             startActivity(loginIntent)
             finish()
             return
         }
 
+        // Mostrar diagnóstico si viene en el intent
         val diagnosis = intent.getStringExtra("USER_DIAGNOSIS")
-
         if (!diagnosis.isNullOrEmpty()) {
             Toast.makeText(this, "Diagnóstico recibido: $diagnosis", Toast.LENGTH_LONG).show()
         }
 
+        // Crear canal de notificación
         NotificationHelper(this).createNotificationChannel()
 
+        // 🔹 Pedir permiso de notificaciones en Android 13+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val permission = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            )
+            if (permission != PackageManager.PERMISSION_GRANTED) {
+                ActivityCompat.requestPermissions(
+                    this,
+                    arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+                    100 // requestCode arbitrario
+                )
+            }
+        }
         setContent {
             Diabetes_AppTheme {
                 MainScreen(
@@ -208,9 +231,9 @@ class MainActivity : ComponentActivity() {
                     onLogoutClick = {
                         firebaseAuth.signOut()
                         Toast.makeText(this, "Sesión cerrada", Toast.LENGTH_SHORT).show()
-                        val loginIntent = Intent(this, LoginActivity::class.java)
-                        loginIntent.flags =
-                            Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        val loginIntent = Intent(this, LoginActivity::class.java).apply {
+                            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
+                        }
                         startActivity(loginIntent)
                         finish()
                     }
@@ -363,7 +386,16 @@ fun MainScreen(
                     }
                 }
 
-                medications = userDocRef.collection("medications").get().await().toObjects(MedicationData::class.java)
+                // Obtenemos el "snapshot" completo en lugar de solo los objetos
+                val medicationsSnapshot = userDocRef.collection("medications").get().await()
+
+                // Mapeamos cada documento manualmente para extraer su ID
+                medications = medicationsSnapshot.documents.mapNotNull { document ->
+                    val med = document.toObject(MedicationData::class.java)
+                    // Usamos .copy para meter el ID del documento (document.id) en el campo docId
+                    med?.copy(docId = document.id)
+                }
+                Log.d("MainScreen", "Medicamentos cargados con IDs: ${medications.map { it.docId }}")
                 dailyRecords = userDocRef.collection("dailyRecords").get().await().toObjects(DailyRecordData::class.java)
                 mealRecords = userDocRef.collection("mealRecords").get().await().toObjects(MealRecordData::class.java)
 
@@ -379,13 +411,13 @@ fun MainScreen(
                     checkAndAdvanceStreak(currentUser.uid, userProfile)
                 }
 
-                medications.forEach { med ->
-                    val expectedTimes = calculateExpectedDoseTimes(med)
-                    expectedTimes.forEach { (timeStr, _) ->
-                        alarmScheduler.scheduleNotification(med, timeStr)
+                fun calculateExpectedDoseTimes(med: MedicationData): List<String> {
+                    return when (med.frequency.lowercase()) {
+                        "daily" -> listOf(med.time) // cada día a la misma hora
+                        "weekly" -> listOf(med.time) // aquí podrías añadir lógica para día de la semana
+                        else -> listOf(med.time) // por defecto, usa el horario único
                     }
                 }
-
             } catch (e: Exception) {
                 Toast.makeText(context, "Error al cargar datos iniciales: ${e.message}", Toast.LENGTH_LONG).show()
                 Log.e("MainScreen", "Error al cargar datos iniciales de Firestore: ${e.message}")
@@ -415,109 +447,134 @@ fun MainScreen(
 
     ModalNavigationDrawer(
         drawerState = drawerState,
+        gesturesEnabled = drawerState.currentValue == DrawerValue.Open, // ✅ corrección
         drawerContent = {
             ModalDrawerSheet(
-                modifier = Modifier.fillMaxWidth(0.7f),
+                modifier = Modifier.fillMaxWidth(0.8f), // ✅ ancho dinámico 80%
                 drawerContainerColor = colorResource(id = R.color.drawerBackground)
             ) {
+                // ✅ Scroll para que no se corte en pantallas pequeñas
                 Column(
                     modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(24.dp),
-                    horizontalAlignment = Alignment.Start
+                        .fillMaxSize()
+                        .verticalScroll(rememberScrollState())
                 ) {
-                    Box(
+                    // --- HEADER con gradiente oscuro fijo ---
+                    Column(
                         modifier = Modifier
-                            .size(100.dp)
-                            .clip(CircleShape)
-                            .background(colorResource(id = R.color.drawerTitleText).copy(alpha = 0.1f))
-                            .padding(4.dp)
-                            .border(2.dp, colorResource(id = R.color.drawerTitleText), CircleShape)
+                            .fillMaxWidth()
+                            .background(
+                                Brush.verticalGradient(
+                                    colors = listOf(
+                                        Color(0xFF1E1E1E), // gris oscuro
+                                        Color(0xFF121212)  // casi negro
+                                    )
+                                )
+                            )
+                            .padding(horizontal = 24.dp, vertical = 32.dp),
+                        horizontalAlignment = Alignment.Start
                     ) {
-                        AsyncImage(
-                            model = userProfile.photoUrl ?: R.drawable.ic_default_profile,
-                            contentDescription = "Foto de perfil",
+                        Box(
                             modifier = Modifier
-                                .fillMaxSize()
-                                .clip(CircleShape),
-                            contentScale = ContentScale.Crop
+                                .size(100.dp)
+                                .clip(CircleShape)
+                                .background(Color.White.copy(alpha = 0.2f))
+                                .padding(4.dp)
+                                .border(2.dp, Color.White, CircleShape)
+                        ) {
+                            AsyncImage(
+                                model = userProfile.photoUrl ?: R.drawable.ic_default_profile,
+                                contentDescription = "Foto de perfil",
+                                modifier = Modifier.fillMaxSize().clip(CircleShape),
+                                contentScale = ContentScale.Crop
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = userProfile.name,
+                            style = MaterialTheme.typography.titleLarge,
+                            color = Color.White, // ✅ texto blanco fijo
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                        Text(
+                            text = userProfile.email,
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = Color.White.copy(alpha = 0.8f), // ✅ texto blanco fijo
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
                         )
                     }
-                    Spacer(modifier = Modifier.height(16.dp))
-                    Text(
-                        text = userProfile.name,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = colorResource(id = R.color.drawerTitleText),
-                        fontWeight = FontWeight.Bold
+
+                    Divider(
+                        modifier = Modifier.padding(vertical = 8.dp),
+                        color = colorResource(id = R.color.drawerDivider)
                     )
-                    Text(
-                        text = userProfile.email,
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colorResource(id = R.color.drawerItemText)
+
+                    // ✅ Items corregidos
+                    val drawerItems = listOf(
+                        NavItem("Inicio", "home", Icons.Filled.Home),
+                        NavItem("Signos Vitales", "daily_record", Icons.Filled.MonitorHeart), // añadido
+                        NavItem("Medicamentos", "medication", Icons.Filled.MedicalServices), // texto corregido
+                        NavItem("Alimentos", "diet", Icons.Filled.Restaurant),
+                        NavItem("Análisis Clínico", "analysis", Icons.Filled.Analytics), // texto corregido
+                        NavItem("Calendario Histórico", "calendar", Icons.Filled.CalendarMonth),
+                        NavItem("Mi Perfil", "profile", Icons.Filled.Person),
+                        NavItem("Acerca de", "about", Icons.Filled.Info),
+                        NavItem("Cerrar Sesión", "logout", Icons.AutoMirrored.Filled.ExitToApp)
                     )
-                }
-                Divider(
-                    modifier = Modifier.padding(vertical = 8.dp),
-                    color = colorResource(id = R.color.drawerDivider)
-                )
 
-                val drawerItems = listOf(
-                    NavItem("Inicio", "home", Icons.Filled.Home),
-                    NavItem("Medica", "medication", Icons.Filled.MedicalServices),
-                    NavItem("Alimentos", "diet", Icons.Filled.Restaurant),
-                    NavItem("Análisis", "analysis", Icons.Filled.Analytics),
-                    NavItem("Calendario", "calendar", Icons.Filled.CalendarMonth),
-                    NavItem("Perfil", "profile", Icons.Filled.Person),
-                    NavItem("Acerca de", "about", Icons.Filled.Info),
-                    NavItem("Cerrar Sesión", "logout", Icons.AutoMirrored.Filled.ExitToApp)
-                )
+                    val navBackStackEntry by navController.currentBackStackEntryAsState()
+                    val currentRoute = navBackStackEntry?.destination?.route
 
-                val navBackStackEntry by navController.currentBackStackEntryAsState()
-                val currentRoute = navBackStackEntry?.destination?.route
-
-                drawerItems.forEach { item ->
-                    val isSelected = currentRoute == item.route
-                    NavigationDrawerItem(
-                        icon = {
-                            Icon(
-                                imageVector = item.icon,
-                                contentDescription = item.title,
-                                tint = if (isSelected) colorResource(id = R.color.drawerItemIconSelected) else colorResource(id = R.color.drawerItemIcon)
-                            )
-                        },
-                        label = {
-                            Text(
-                                text = item.title,
-                                color = if (isSelected) colorResource(id = R.color.drawerItemTextSelected) else colorResource(id = R.color.drawerItemText)
-                            )
-                        },
-                        selected = isSelected,
-                        onClick = {
-                            scope.launch { drawerState.close() }
-                            if (item.route == "logout") {
-                                onLogoutClick()
-                            } else {
-                                navController.navigate(item.route) {
-                                    popUpTo(navController.graph.startDestinationId) {
-                                        saveState = true
+                    drawerItems.forEach { item ->
+                        val isSelected = currentRoute == item.route
+                        NavigationDrawerItem(
+                            icon = {
+                                Icon(
+                                    imageVector = item.icon,
+                                    contentDescription = item.title,
+                                    tint = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant // ✅ dinámico
+                                )
+                            },
+                            label = {
+                                Text(
+                                    text = item.title,
+                                    fontWeight = if (isSelected) FontWeight.Bold else FontWeight.Medium,
+                                    color = if (isSelected) MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurface // ✅ dinámico
+                                )
+                            },
+                            selected = isSelected,
+                            onClick = {
+                                scope.launch { drawerState.close() }
+                                if (item.route == "logout") {
+                                    onLogoutClick()
+                                } else {
+                                    navController.navigate(item.route) {
+                                        popUpTo(navController.graph.startDestinationId) {
+                                            saveState = true
+                                        }
+                                        launchSingleTop = true
+                                        restoreState = true
                                     }
-                                    launchSingleTop = true
-                                    restoreState = true
                                 }
-                            }
-                        },
-                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                        colors = NavigationDrawerItemDefaults.colors(
-                            selectedContainerColor = colorResource(id = R.color.drawerItemSelectedBackground),
-                            selectedIconColor = colorResource(id = R.color.drawerItemIconSelected),
-                            selectedTextColor = colorResource(id = R.color.drawerItemTextSelected)
+                            },
+                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                            colors = NavigationDrawerItemDefaults.colors(
+                                selectedContainerColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.1f), // ✅ dinámico
+                                unselectedContainerColor = Color.Transparent
+                            )
                         )
-                    )
+                    }
+
+                    Spacer(modifier = Modifier.height(24.dp)) // espacio final para scroll
                 }
             }
-        },
-        gesturesEnabled = drawerState.isOpen
-    ) {
+        }
+    ){
         Scaffold(
             bottomBar = {
                 NavigationBar(
@@ -681,7 +738,45 @@ fun MainScreen(
                         modifier = Modifier.fillMaxSize()
                     ) {
                         composable("home") {
-                            val latestOverallDailyRecord = dailyRecords.maxByOrNull { it.date.time }
+                                    // 1. EXTRAER LA ÚLTIMA GLUCOSA REAL
+                            // 1. EXTRAER LA ÚLTIMA GLUCOSA REAL
+                            val latestGlucoseReading = dailyRecords
+                                .sortedByDescending { it.date?.time ?: 0L } // Ordenar por fecha más reciente
+                                .firstNotNullOfOrNull { record -> // Busca el primero que no sea nulo
+                                    val fromList = record.glucoseReadings.lastOrNull()
+
+                                    if (fromList != null) {
+                                        fromList
+                                    } else {
+                                        // Caso B: Compatibilidad con datos antiguos
+                                        val oldVal = record.glucoseValue?.toString()?.toDoubleOrNull()?.toInt() ?: 0
+                                        if (oldVal > 0) GlucoseReading(value = oldVal, moment = "Registro") else null
+                                    }
+                                }
+
+                            // 2. EXTRAER LA ÚLTIMA PRESIÓN REAL
+                            val latestPressureReading = dailyRecords
+                                .sortedByDescending { it.date?.time ?: 0L }
+                                .firstNotNullOfOrNull { record ->
+                                    val fromList = record.bloodPressureReadings.lastOrNull()
+
+                                    if (fromList != null) {
+                                        fromList
+                                    } else {
+                                        // Caso B: Compatibilidad con campos antiguos (sistolica/diastolica)
+                                        val sis = record.sistolica?.toString()?.toDoubleOrNull()?.toInt() ?: 0
+                                        val dia = record.diastolica?.toString()?.toDoubleOrNull()?.toInt() ?: 0
+                                        val pul = record.pulso?.toString()?.toDoubleOrNull()?.toInt() ?: 0
+
+                                        if (sis > 0 && dia > 0) {
+                                            BloodPressureReading(sistolica = sis, diastolica = dia, pulso = pul, moment = "Registro")
+                                        } else null
+                                    }
+                                }
+
+                            // 3. REGISTRO GENERAL
+                            val latestOverallDailyRecord = dailyRecords.maxByOrNull { it.date?.time ?: 0L }
+
                             val currentDayMealRecords = mealRecords.filter {
                                 it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() == currentDate
                             }
@@ -689,16 +784,17 @@ fun MainScreen(
                                 it.timestamp.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() == currentDate
                             }
 
-                            // CORRECCIÓN: Extraer la última lectura por tiempo, no por valor.
-                            val latestGlucoseReading = latestOverallDailyRecord?.glucoseReadings?.lastOrNull()
-                            val latestPressureReading = latestOverallDailyRecord?.bloodPressureReadings?.lastOrNull()
-
-
                             HomeScreen(
-                                userName = userProfile.name,
+                                // .ifBlank evita que se vea vacío si el perfil no ha cargado aún
+                                userName = userProfile.name.ifBlank { "Usuario" },
                                 profileImageUrl = userProfile.photoUrl,
                                 streakDays = userProfile.streakDays,
                                 latestOverallDailyRecord = latestOverallDailyRecord,
+
+                                // Estos valores ya vienen calculados de tu lógica anterior (firstOrNull)
+                                latestGlucoseReading = latestGlucoseReading,
+                                latestPressureReading = latestPressureReading,
+
                                 medications = medications,
                                 mealRecords = currentDayMealRecords,
                                 todayDosageRecords = todayDosageRecords,
@@ -706,29 +802,37 @@ fun MainScreen(
                                 onRegisterMedicationClick = { navController.navigate("add_edit_medication") },
                                 onRegisterFoodClick = { navController.navigate("diet") },
                                 onMarkDoseTaken = { medName, timeOfDay ->
-                                    firebaseAuth.currentUser?.uid?.let { userId ->
+                                    val currentUser = firebaseAuth.currentUser
+                                    if (currentUser != null) {
+                                        val userId = currentUser.uid
+
+                                        // 1. Crear el objeto de registro
                                         val newDosageRecord = DosageTakenRecord(
-                                            // CORRECCIÓN: Usar medicationDocId
                                             medicationDocId = medName,
                                             timestamp = Date(),
                                             userId = userId,
                                             timeOfDay = timeOfDay
                                         )
-                                        val now = LocalTime.now().format(DateTimeFormatter.ofPattern("HH-mm-ss"))
-                                        val docId = "${medName}-${LocalDate.now().toString()}-$now"
 
+                                        // 2. Crear un ID de documento seguro (sin espacios ni caracteres raros)
+                                        val safeMedName = medName.replace(Regex("[^a-zA-Z0-9]"), "_")
+                                        val nowTime = LocalTime.now().format(DateTimeFormatter.ofPattern("HH-mm-ss"))
+                                        val docId = "${safeMedName}_${LocalDate.now()}_$nowTime"
+
+                                        // 3. Guardar en Firestore
                                         firestoreDb.collection("users").document(userId)
                                             .collection("dosageTakenRecords").document(docId)
                                             .set(newDosageRecord)
                                             .addOnSuccessListener {
-                                                Toast.makeText(context, "Dosis de $medName marcada como tomada.", Toast.LENGTH_SHORT).show()
+                                                Toast.makeText(context, "✅ Dosis de $medName registrada", Toast.LENGTH_SHORT).show()
+                                                // Actualizar estado local para que la UI reaccione al instante
                                                 dosageTakenRecords = dosageTakenRecords + newDosageRecord
-                                                alarmScheduler.cancelNotification(MedicationData(name=medName, dose=0, unit="", time=timeOfDay, frequency=""), timeOfDay)
                                             }
                                             .addOnFailureListener { e ->
-                                                Toast.makeText(context, "Error al marcar dosis: ${e.message}", Toast.LENGTH_SHORT).show()
-                                                Log.e("MainActivity", "Error al marcar dosis: ${e.message}")
+                                                Toast.makeText(context, "❌ Error al guardar: ${e.message}", Toast.LENGTH_LONG).show()
                                             }
+                                    } else {
+                                        Toast.makeText(context, "Error: Usuario no autenticado", Toast.LENGTH_SHORT).show()
                                     }
                                 }
                             )
@@ -746,8 +850,11 @@ fun MainScreen(
                                 onRemoveMedication = { medicationToRemove ->
                                     medications = medications.filter { it.name != medicationToRemove.name }
                                     firebaseAuth.currentUser?.uid?.let { userId ->
-                                        val dosesToCancel = calculateExpectedDoseTimes(medicationToRemove)
-                                        dosesToCancel.forEach { (timeStr, _) ->
+                                        fun calculateExpectedDoseTimes(med: MedicationData): List<String> {
+                                            return listOf(med.time) // o varios horarios si los calculas
+                                        }
+                                        val dosesToCancel: List<String> = calculateExpectedDoseTimes(medicationToRemove)
+                                        dosesToCancel.forEach { timeStr ->
                                             alarmScheduler.cancelNotification(medicationToRemove, timeStr)
                                         }
 
@@ -779,10 +886,14 @@ fun MainScreen(
                                             .addOnSuccessListener {
                                                 Toast.makeText(context, "Dosis de $medName marcada como tomada.", Toast.LENGTH_SHORT).show()
                                                 dosageTakenRecords = dosageTakenRecords + newDosageRecord
-                                                alarmScheduler.cancelNotification(
-                                                    MedicationData(name = medName, dose = 0, unit = "", time = timeOfDay, frequency = ""),
-                                                    timeOfDay
+                                                val med = MedicationData(
+                                                    name = medName,
+                                                    dose = 0,
+                                                    unit = "",
+                                                    time = timeOfDay,
+                                                    frequency = ""
                                                 )
+                                                alarmScheduler.cancelNotification(med, med.time)
                                             }
                                             .addOnFailureListener { e ->
                                                 Toast.makeText(context, "Error al marcar dosis: ${e.message}", Toast.LENGTH_SHORT).show()
@@ -872,33 +983,54 @@ fun MainScreen(
                                 initialMedication = initialMedication,
                                 onSaveMedication = { updatedMed ->
                                     firebaseAuth.currentUser?.uid?.let { userId ->
-                                        firestoreDb.collection("users").document(userId)
-                                            .collection("medications").document(updatedMed.name)
-                                            .set(updatedMed)
+                                        // 1. Prioridad absoluta al docId.
+                                        // Si no existe, usamos el nombre (pero solo para registros nuevos).
+                                        val documentId = if (!updatedMed.docId.isNullOrEmpty()) {
+                                            updatedMed.docId!!
+                                        } else {
+                                            updatedMed.name // Esto solo ocurrirá la primera vez que se crea
+                                        }
+
+                                        val medicationRef = firestoreDb.collection("users").document(userId)
+                                            .collection("medications").document(documentId)
+
+                                        medicationRef.set(updatedMed)
                                             .addOnSuccessListener {
-                                                Toast.makeText(context, "Medicamento '${updatedMed.name}' añadido/actualizado.", Toast.LENGTH_LONG).show()
+                                                Toast.makeText(context, "Medicamento guardado con éxito", Toast.LENGTH_SHORT).show()
+
+                                                // 2. Actualización reactiva de la lista local
                                                 val updatedList = medications.toMutableList()
-                                                val existingIndex = updatedList.indexOfFirst { it.name == updatedMed.name }
+
+                                                // Buscamos por docId primero, luego por nombre si es nuevo
+                                                val existingIndex = updatedList.indexOfFirst {
+                                                    it.docId == documentId || it.name == updatedMed.name
+                                                }
+
                                                 if (existingIndex != -1) {
                                                     updatedList[existingIndex] = updatedMed
                                                 } else {
                                                     updatedList.add(updatedMed)
                                                 }
+
+                                                // Ordenamos y asignamos a la variable de estado
                                                 medications = updatedList.sortedBy { it.name }
 
+                                                // 3. Reprogramar notificaciones
                                                 val expectedTimes = calculateExpectedDoseTimes(updatedMed)
                                                 expectedTimes.forEach { (timeStr, _) ->
                                                     alarmScheduler.scheduleNotification(updatedMed, timeStr)
                                                 }
-
                                             }
-                                            .addOnFailureListener { e -> Toast.makeText(context, "Error al guardar medicamento: ${e.message}", Toast.LENGTH_SHORT).show() }
+                                            .addOnFailureListener { e ->
+                                                Toast.makeText(context, "Error: ${e.message}", Toast.LENGTH_SHORT).show()
+                                            }
                                     }
                                     navController.popBackStack()
                                 },
                                 onCancel = { navController.popBackStack() }
                             )
                         }
+
                         // RUTA DE EDICIÓN/AÑADIDO DIARIO ACTUALIZADA PARA SOPORTAR EL OBJETO JSON COMPLETO
                         composable(
                             route = "daily_record?initialDate={initialDate}&initialRecordJson={initialRecordJson}",
@@ -1047,7 +1179,9 @@ fun HomeScreen(
     userName: String,
     profileImageUrl: String?,
     streakDays: Int,
-    latestOverallDailyRecord: DailyRecordData?,
+    latestOverallDailyRecord: DailyRecordData?, // Se mantiene por si lo usas en otro lado
+    latestGlucoseReading: GlucoseReading?,    // <--- Usaremos este
+    latestPressureReading: BloodPressureReading?, // <--- Usaremos este
     medications: List<MedicationData>,
     mealRecords: List<MealRecordData>,
     todayDosageRecords: List<DosageTakenRecord>,
@@ -1058,10 +1192,10 @@ fun HomeScreen(
 ) {
     val gradientStartColor = colorResource(id = R.color.backgroundGradientStart)
     val gradientEndColor = colorResource(id = R.color.backgroundGradientEnd)
-    val latestGlucoseReading = latestOverallDailyRecord?.glucoseReadings?.lastOrNull()
-    val latestPressureReading = latestOverallDailyRecord?.bloodPressureReadings?.lastOrNull()
 
-    // La estructura del contenedor se mantiene
+    // ELIMINAMOS LAS LÍNEAS QUE SOBRES ESCRIBÍAN LAS VARIABLES AQUÍ
+    // Ahora el Composable usará directamente los parámetros que recibe la función.
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -1070,7 +1204,7 @@ fun HomeScreen(
             .padding(horizontal = 16.dp, vertical = 8.dp)
     ) {
         Spacer(modifier = Modifier.height(16.dp))
-        // Llama a la función ProfileHeader, que ahora tiene el diseño mejorado
+
         ProfileHeader(
             userName = userName,
             profileImageUrl = profileImageUrl,
@@ -1078,11 +1212,13 @@ fun HomeScreen(
         )
         Spacer(modifier = Modifier.height(16.dp))
 
+        // Esta tarjeta ahora recibirá los datos procesados correctamente
         GlucoseAndPressureCard(
             onAddRecordClick = onAddRecordClick,
             latestGlucoseReading = latestGlucoseReading,
             latestPressureReading = latestPressureReading
         )
+
         Spacer(modifier = Modifier.height(16.dp))
 
         MedicationReminderCard(
@@ -1091,19 +1227,20 @@ fun HomeScreen(
             onRegisterMedicationClick = onRegisterMedicationClick,
             onMarkDoseTaken = onMarkDoseTaken
         )
+
         Spacer(modifier = Modifier.height(16.dp))
 
         FoodAndDietCard(
             todayMeals = mealRecords,
             onRegisterFoodClick = onRegisterFoodClick
         )
+
         Spacer(modifier = Modifier.height(16.dp))
 
         TipOfTheDayCard()
         Spacer(modifier = Modifier.height(16.dp))
     }
 }
-
 @Composable
 fun ProfileHeader(userName: String, profileImageUrl: String?, streakDays: Int) {
     val imageModel = remember(profileImageUrl) {
@@ -2629,24 +2766,20 @@ fun CalendarScreen(
     dailyRecords: List<DailyRecordData>,
     mealRecords: List<MealRecordData>,
     onAddRecordClick: (LocalDate?) -> Unit,
-    // ❌ onBackClick: () -> Unit ELIMINADO
 ) {
     val context = LocalContext.current
     val today = LocalDate.now()
-
-    // Usaremos un estado para manejar el mes y año visibles, permitiendo futura navegación
     val initialDate = remember { LocalDate.now() }
     val currentMonthYear by remember { mutableStateOf(initialDate) }
 
     val currentMonth = currentMonthYear.month
     val currentYear = currentMonthYear.year
     val daysInMonth = remember { currentMonthYear.lengthOfMonth() }
-    val firstDayOfMonth = remember { currentMonthYear.dayOfWeek.value } // Lunes = 1, Domingo = 7
+    val firstDayOfMonth = remember { currentMonthYear.dayOfWeek.value }
 
-    var selectedDay by remember { mutableStateOf<LocalDate?>(today) } // Seleccionar HOY por defecto
+    var selectedDay by remember { mutableStateOf<LocalDate?>(today) }
     var showRecordDetailsDialog by remember { mutableStateOf<DailyRecordData?>(null) }
 
-    // Registros del día seleccionado (Mantenemos la lógica de filtrado)
     val recordsForSelectedDay = remember(selectedDay, dailyRecords) {
         selectedDay?.let { day ->
             dailyRecords.filter {
@@ -2665,9 +2798,41 @@ fun CalendarScreen(
         recordsForSelectedDay.firstOrNull { it.activities.isNotEmpty() || it.symptoms.isNotEmpty() || it.notes?.isNotBlank() == true }
     }
 
+    // --- FUNCIÓN PARA EXPORTAR ---
+    fun compartirReporte() {
+        if (dailyRecords.isEmpty()) {
+            Toast.makeText(context, "No hay datos para exportar", Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        val reporte = StringBuilder()
+        reporte.append("Reporte de Salud - ACIF App\n")
+        reporte.append("Generado el: ${LocalDate.now()}\n\n")
+
+        // Tomar los últimos 7 días de registros
+        dailyRecords.sortedByDescending { it.date }.take(10).forEach { record ->
+            val fechaFormateada = SimpleDateFormat("dd/MM/yyyy", Locale.getDefault()).format(record.date)
+            reporte.append("📅 Fecha: $fechaFormateada\n")
+
+            record.glucoseReadings.forEach { g ->
+                reporte.append("🩸 Glucosa: ${g.value} mg/dL (${g.moment})\n")
+            }
+            record.bloodPressureReadings.forEach { p ->
+                reporte.append("❤️ Presión: ${p.sistolica}/${p.diastolica} mmHg (Pulso: ${p.pulso})\n")
+            }
+            if (!record.notes.isNullOrBlank()) reporte.append("📝 Notas: ${record.notes}\n")
+            reporte.append("--------------------------\n")
+        }
+
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_SUBJECT, "Mi Reporte de Glucosa y Presión")
+            putExtra(Intent.EXTRA_TEXT, reporte.toString())
+        }
+        context.startActivity(Intent.createChooser(intent, "Compartir Reporte con mi Médico"))
+    }
 
     Scaffold(
-        // ❌ TopAppBar ELIMINADO
         containerColor = colorResource(id = R.color.appBackground)
     ) { innerPadding ->
         Column(
@@ -2678,7 +2843,6 @@ fun CalendarScreen(
                 .verticalScroll(rememberScrollState()),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            // ✅ Botón de regreso añadido al cuerpo, ya que eliminamos el TopAppBar
             Row(
                 modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
@@ -2686,143 +2850,70 @@ fun CalendarScreen(
             ) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     IconButton(onClick = { navController.popBackStack() }) {
-                        Icon(
-                            Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Atrás",
-                            tint = colorResource(id = R.color.primaryText)
-                        )
+                        Icon(Icons.AutoMirrored.Filled.ArrowBack, "Atrás", tint = colorResource(id = R.color.primaryText))
                     }
                     Text(
-                        "Calendario de Diabetes",
+                        "Historial y Reportes",
                         style = MaterialTheme.typography.titleLarge,
                         fontWeight = FontWeight.Bold,
-                        color = colorResource(id = R.color.primaryText),
-                        modifier = Modifier.align(Alignment.CenterVertically)
+                        color = colorResource(id = R.color.primaryText)
                     )
                 }
 
-                // Acción de Exportar Reporte
-                IconButton(onClick = { /* Lógica de Exportar Reporte */ }) {
+                // ✅ BOTÓN CORREGIDO: Ahora llama a compartirReporte()
+                IconButton(onClick = { compartirReporte() }) {
                     Icon(
-                        Icons.Filled.Description,
+                        imageVector = Icons.Filled.Share, // Cambiado a Share para que sea más claro
                         contentDescription = "Exportar Reporte",
-                        tint = colorResource(id = R.color.primaryText)
+                        tint = colorResource(id = R.color.buttonPrimaryBackground)
                     )
                 }
             }
 
-            // --- 1. TÍTULO DEL MES Y AÑO ---
             Text(
-                text = currentMonth.getDisplayName(
-                    java.time.format.TextStyle.FULL,
-                    Locale("es", "ES")
-                ).replaceFirstChar { it.uppercase(Locale("es", "ES")) } + " $currentYear",
-                fontSize = 24.sp,
+                text = currentMonth.getDisplayName(java.time.format.TextStyle.FULL, Locale("es", "ES")).uppercase() + " $currentYear",
+                fontSize = 20.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = colorResource(id = R.color.primaryText),
-                modifier = Modifier.padding(top = 16.dp, bottom = 8.dp)
+                modifier = Modifier.padding(vertical = 16.dp)
             )
 
-            // --- 2. CALENDARIO GRID MEJORADO ---
+            // --- GRID DEL CALENDARIO ---
             Card(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .padding(horizontal = 16.dp),
+                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 elevation = CardDefaults.cardElevation(defaultElevation = 8.dp),
                 shape = RoundedCornerShape(16.dp),
                 colors = CardDefaults.cardColors(containerColor = colorResource(id = R.color.cardBackground))
             ) {
                 Column(modifier = Modifier.padding(16.dp)) {
-                    // Días de la semana (LUN, MAR, etc.)
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.SpaceAround
-                    ) {
-                        listOf("LUN", "MAR", "MIÉ", "JUE", "VIE", "SÁB", "DOM").forEach { day ->
-                            Text(
-                                day,
-                                fontWeight = FontWeight.Bold,
-                                color = colorResource(id = R.color.textSecondary),
-                                fontSize = 12.sp,
-                                textAlign = TextAlign.Center,
-                                modifier = Modifier.weight(1f)
-                            )
+                    Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
+                        listOf("L", "M", "M", "J", "V", "S", "D").forEach { day ->
+                            Text(day, fontWeight = FontWeight.Bold, color = colorResource(id = R.color.textSecondary), modifier = Modifier.weight(1f), textAlign = TextAlign.Center)
                         }
                     }
-
                     Spacer(modifier = Modifier.height(12.dp))
-
-                    // Días del mes
                     val displayOffset = (firstDayOfMonth - 1 + 7) % 7
                     var dayCounter = 1 - displayOffset
-
                     repeat((daysInMonth + displayOffset + 6) / 7) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.SpaceAround
-                        ) {
+                        Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceAround) {
                             repeat(7) {
-                                if (dayCounter > 0 && dayCounter <= daysInMonth) {
-                                    val dayOfMonth = dayCounter
-                                    val dateForCell = LocalDate.of(currentYear, currentMonth, dayOfMonth)
-                                    val isToday = dateForCell == today
-                                    val hasRecord = dailyRecords.any {
-                                        it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() == dateForCell
-                                    } || mealRecords.any {
-                                        it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() == dateForCell
-                                    }
-
+                                if (dayCounter in 1..daysInMonth) {
+                                    val dateForCell = LocalDate.of(currentYear, currentMonth, dayCounter)
                                     val isSelected = selectedDay == dateForCell
-
-                                    val cellBackgroundColor = when {
-                                        isSelected -> colorResource(id = R.color.buttonPrimaryBackground).copy(alpha = 0.2f)
-                                        else -> Color.Transparent
-                                    }
-
-                                    val textColor = when {
-                                        isToday -> colorResource(id = R.color.buttonPrimaryBackground)
-                                        else -> colorResource(id = R.color.primaryText)
-                                    }
+                                    val hasRecord = dailyRecords.any { it.date.toInstant().atZone(ZoneId.systemDefault()).toLocalDate() == dateForCell }
 
                                     Box(
-                                        modifier = Modifier
-                                            .size(40.dp)
-                                            .padding(2.dp)
-                                            .background(cellBackgroundColor, CircleShape)
-                                            .border(
-                                                2.dp,
-                                                if (isToday) colorResource(id = R.color.buttonPrimaryBackground) else Color.Transparent,
-                                                CircleShape
-                                            )
-                                            .clip(CircleShape)
-                                            .clickable {
-                                                selectedDay = dateForCell
-                                            }
-                                            .wrapContentSize(Alignment.Center)
+                                        modifier = Modifier.size(40.dp).padding(2.dp)
+                                            .background(if (isSelected) colorResource(id = R.color.buttonPrimaryBackground).copy(alpha = 0.2f) else Color.Transparent, CircleShape)
+                                            .clickable { selectedDay = dateForCell },
+                                        contentAlignment = Alignment.Center
                                     ) {
-                                        Text(
-                                            text = dayOfMonth.toString(),
-                                            color = textColor,
-                                            fontWeight = if (isToday) FontWeight.Bold else FontWeight.Normal,
-                                            fontSize = 16.sp,
-                                            textAlign = TextAlign.Center
-                                        )
-
-                                        // Indicador de registro (punto verde)
+                                        Text(text = dayCounter.toString(), color = if (dateForCell == today) colorResource(id = R.color.buttonPrimaryBackground) else colorResource(id = R.color.primaryText), fontWeight = if (dateForCell == today) FontWeight.Bold else FontWeight.Normal)
                                         if (hasRecord) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .align(Alignment.BottomCenter)
-                                                    .padding(bottom = 4.dp)
-                                                    .size(6.dp)
-                                                    .clip(CircleShape)
-                                                    .background(colorResource(id = R.color.accentGreenButton))
-                                            )
+                                            Box(modifier = Modifier.align(Alignment.BottomCenter).padding(bottom = 4.dp).size(4.dp).background(colorResource(id = R.color.accentGreenButton), CircleShape))
                                         }
                                     }
-                                } else {
-                                    Spacer(modifier = Modifier.size(40.dp).padding(2.dp))
-                                }
+                                } else { Spacer(modifier = Modifier.size(40.dp)) }
                                 dayCounter++
                             }
                         }
@@ -2830,7 +2921,6 @@ fun CalendarScreen(
                 }
             }
 
-            // --- 3. SECCIÓN DE REGISTROS DEL DÍA SELECCIONADO ---
             Spacer(modifier = Modifier.height(24.dp))
 
             if (selectedDay != null) {
@@ -2842,25 +2932,13 @@ fun CalendarScreen(
                     onAddRecordClick = onAddRecordClick,
                     onViewRecord = { showRecordDetailsDialog = it },
                     onEditRecord = { recordToEdit ->
-                        // Navegar a la pantalla de edición
                         val recordJson = Gson().toJson(recordToEdit)
                         navController.navigate("daily_record?initialRecordJson=$recordJson")
                     }
                 )
-            } else {
-                Text(
-                    "Selecciona un día en el calendario para ver sus registros.",
-                    fontSize = 16.sp,
-                    color = colorResource(id = R.color.textSecondary),
-                    textAlign = TextAlign.Center,
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 32.dp)
-                )
             }
         }
 
-        // Diálogo de Ver Registro (Mantener la llamada al diálogo)
         showRecordDetailsDialog?.let { record ->
             RecordDetailsDialog(record = record, onDismiss = { showRecordDetailsDialog = null })
         }
@@ -3086,7 +3164,7 @@ fun RecordCardItemWithActions(
                 )
                 Spacer(modifier = Modifier.width(8.dp))
                 Text(
-                    "Registro de Vitals",
+                    "Registro de Vitales",
                     fontWeight = FontWeight.Bold,
                     fontSize = 16.sp,
                     color = primaryColor
@@ -4093,9 +4171,9 @@ fun MealInputCardContent(
                                 ) {
                                     Text(
                                         text = when (level) {
-                                            MealQuantityLevel.PEQUEÑA -> "P"
-                                            MealQuantityLevel.MEDIANA -> "M"
-                                            MealQuantityLevel.GRANDE -> "G"
+                                            MealQuantityLevel.PEQUEÑA -> "Peq"
+                                            MealQuantityLevel.MEDIANA -> "Med"
+                                            MealQuantityLevel.GRANDE -> "Gra"
                                         },
                                         fontSize = 13.sp,
                                         fontWeight = FontWeight.Medium,
@@ -4154,9 +4232,9 @@ fun RecordItem(record: MealRecordData) {
             )
             val itemsList = record.selectedItemsWithQuantities.joinToString(", ") { (name, level) ->
                 val levelText = when (level) {
-                    MealQuantityLevel.PEQUEÑA -> "P"
-                    MealQuantityLevel.MEDIANA -> "M"
-                    MealQuantityLevel.GRANDE -> "G"
+                    MealQuantityLevel.PEQUEÑA -> "Peq"
+                    MealQuantityLevel.MEDIANA -> "Med"
+                    MealQuantityLevel.GRANDE -> "Grande"
                 }
                 "$name ($levelText)"
             }
@@ -4737,16 +4815,21 @@ fun DailyRecordScreen(
                 onClick = {
                     val currentDateTime = Date()
                     val recordDateLocal = recordDate.value
-                    // Lógica de guardado (mantenida del original)
-                    val vitalsDocId = if(initialRecordToEdit != null) {
-                        initialRecordToEdit.docId ?: "${recordDateLocal.toString()}_TAKE_${LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss"))}"
+                    val userId = firebaseAuth.currentUser?.uid ?: ""
+
+                    // Determinar ID del documento para Signos Vitales
+                    val vitalsDocId = if (initialRecordToEdit != null) {
+                        initialRecordToEdit.docId ?: "${recordDateLocal}_TAKE_${LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss"))}"
                     } else {
-                        "${recordDateLocal.toString()}_TAKE_${LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss"))}"
+                        "${recordDateLocal}_TAKE_${LocalTime.now().format(DateTimeFormatter.ofPattern("HHmmss"))}"
                     }
+
                     val vitalsDocRef = firestoreDb.collection("users").document(userId)
                         .collection("dailyRecords").document(vitalsDocId)
+
                     var vitalsSaved = false
-                    // --- 1. Guardar/Actualizar Vitals (Glucosa, Presión, Pulso) ---
+
+                    // --- 1. Guardar Signos Vitales (Glucosa, Presión, Pulso) ---
                     if (glucoseValue.isNotBlank() || (sistolica.isNotBlank() && diastolica.isNotBlank()) || pulso.isNotBlank()) {
                         val dateForRecord = initialRecordToEdit?.date ?: currentDateTime
                         val newVitalsRecord = DailyRecordData(
@@ -4764,60 +4847,46 @@ fun DailyRecordScreen(
                                         moment = selectedMeasurementMoment
                                     )
                                 )
-                            } else emptyList(),
-                            symptoms = emptyList(), activities = emptyList(), foodTypes = emptyList(), activityTime = null, notes = null
+                            } else emptyList()
                         )
+
                         vitalsDocRef.set(newVitalsRecord, SetOptions.merge())
                             .addOnSuccessListener {
                                 vitalsSaved = true
-                                // Log.d("DailyRecordScreen", "Vitals saved/updated with ID: $vitalsDocId")
-                                Toast.makeText(context, if(initialRecordToEdit != null) "Medición editada y guardada." else "Medición vital registrada.", Toast.LENGTH_SHORT).show()
-                            }
-                            .addOnFailureListener { e ->
-                                // Log.e("DailyRecordScreen", "Error saving vitals: ${e.message}")
-                                Toast.makeText(context, "Error al guardar medición: ${e.message}", Toast.LENGTH_SHORT).show()
+                                Log.d("DailyRecord", "Vitals guardados exitosamente")
                             }
                     }
-                    // --- 2. Guardar/Actualizar Detalles (Hábitos y Notas) ---
-                    // Siempre intenta guardar los detalles, incluso si los vitals están vacíos
-                    if (showMoreDetails || initialRecordToEdit != null) {
-                        val detailsDocId = "${recordDateLocal.toString()}_DETAILS"
-                        val detailsDocRef = firestoreDb.collection("users").document(userId)
-                            .collection("dailyRecords").document(detailsDocId)
-                        // Recolectar datos
-                        val selectedSymptoms = selectableSymptoms.filter { it.isSelected }.map { it.name }
-                        val selectedActivities = selectableActivities.filter { it.isSelected }.map { it.name }
-                        val selectedFoodTypes = selectableFoodTypes.filter { it.isSelected }.map { it.name }
-                        val detailsRecord = DailyRecordData(
-                            date = Date.from(recordDateLocal.atStartOfDay(ZoneId.systemDefault()).toInstant()),
-                            docId = detailsDocId,
-                            symptoms = selectedSymptoms,
-                            activities = selectedActivities,
-                            foodTypes = selectedFoodTypes,
-                            activityTime = activityTimeInput.ifBlank { null },
-                            notes = notes.ifBlank { null },
-                            // Vitals quedan vacíos en el registro DETAILS
-                            glucoseReadings = emptyList(), bloodPressureReadings = emptyList()
-                        )
-                        detailsDocRef.set(detailsRecord, SetOptions.merge())
-                            .addOnSuccessListener {
-                                // Log.d("DailyRecordScreen", "Details saved/updated with ID: $detailsDocId")
-                                if (!vitalsSaved) {
-                                    Toast.makeText(context, "Detalles guardados.", Toast.LENGTH_SHORT).show()
-                                }
-                                onSaveRecord(detailsRecord) // Devolver el registro de detalles
-                                navController.popBackStack()
+
+                    // --- 2. Guardar Detalles (Síntomas, Actividad, Notas) ---
+                    val detailsDocId = "${recordDateLocal}_DETAILS"
+                    val detailsDocRef = firestoreDb.collection("users").document(userId)
+                        .collection("dailyRecords").document(detailsDocId)
+
+                    val selectedSymptoms = selectableSymptoms.filter { it.isSelected }.map { it.name }
+                    val selectedActivities = selectableActivities.filter { it.isSelected }.map { it.name }
+
+                    val detailsRecord = DailyRecordData(
+                        date = Date.from(recordDateLocal.atStartOfDay(ZoneId.systemDefault()).toInstant()),
+                        docId = detailsDocId,
+                        symptoms = selectedSymptoms,
+                        activities = selectedActivities,
+                        activityTime = activityTimeInput.ifBlank { null },
+                        notes = notes.ifBlank { null }
+                    )
+
+                    detailsDocRef.set(detailsRecord, SetOptions.merge())
+                        .addOnSuccessListener {
+                            Toast.makeText(context, "Registro guardado correctamente", Toast.LENGTH_SHORT).show()
+
+                            // ✅ REDIRECCIÓN DEFINITIVA A INICIO
+                            // Esto evita que regreses a una pantalla vacía
+                            navController.navigate("home") {
+                                popUpTo("home") { inclusive = true }
                             }
-                            .addOnFailureListener { e ->
-                                // Log.e("DailyRecordScreen", "Error saving details: ${e.message}")
-                                Toast.makeText(context, "Error al guardar detalles: ${e.message}", Toast.LENGTH_SHORT).show()
-                            }
-                    } else if (vitalsSaved) {
-                        // Si solo se guardaron vitals y no hay detalles que guardar
-                        navController.popBackStack()
-                    } else {
-                        Toast.makeText(context, "Ingresa al menos una medición vital o detalles.", Toast.LENGTH_SHORT).show()
-                    }
+                        }
+                        .addOnFailureListener { e ->
+                            Toast.makeText(context, "Error al guardar: ${e.message}", Toast.LENGTH_SHORT).show()
+                        }
                 },
                 modifier = Modifier
                     .fillMaxWidth()
@@ -4831,7 +4900,7 @@ fun DailyRecordScreen(
                 elevation = ButtonDefaults.buttonElevation(defaultElevation = 6.dp)
             ) {
                 Text(
-                    "GUARDAR REGISTRO",
+                    text = "GUARDAR REGISTRO",
                     fontSize = 18.sp,
                     fontWeight = FontWeight.Bold
                 )

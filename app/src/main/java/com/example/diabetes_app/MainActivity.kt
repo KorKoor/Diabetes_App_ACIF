@@ -3,7 +3,6 @@
 package com.example.diabetes_app
 
 import android.app.TimePickerDialog
-import android.content.Context
 import android.content.Intent
 import android.os.Build
 import android.os.Bundle
@@ -32,7 +31,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
@@ -62,7 +60,6 @@ import coil.compose.AsyncImage
 import com.example.diabetes_app.ui.theme.Diabetes_AppTheme
 import com.google.firebase.auth.FirebaseAuth
 import com.google.firebase.firestore.FirebaseFirestore
-import com.google.firebase.firestore.ktx.toObjects
 import kotlinx.coroutines.tasks.await
 import java.time.LocalDate
 import java.time.LocalTime
@@ -92,7 +89,6 @@ import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.ui.draw.shadow
 import com.google.firebase.firestore.SetOptions
-import com.google.firebase.firestore.FieldValue
 import com.example.diabetes_app.data.UserProfile
 import com.example.diabetes_app.data.MedicationData
 import com.example.diabetes_app.data.DailyRecordData
@@ -109,13 +105,10 @@ import com.example.diabetes_app.ui.analysis.AnalysisScreen
 import com.example.diabetes_app.ui.profile.ProfileScreen
 import com.example.diabetes_app.data.GlucoseReading
 import com.example.diabetes_app.data.BloodPressureReading
-import com.example.diabetes_app.R.style.CustomTimePickerDialogTheme // Importar tema personalizado
 import androidx.compose.material.icons.filled.LocalFireDepartment
-import androidx.room.util.copy
 import java.text.SimpleDateFormat
 import android.content.pm.PackageManager
 import android.Manifest
-import androidx.activity.compose.setContent
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
 
@@ -189,7 +182,6 @@ class MainActivity : ComponentActivity() {
         firebaseAuth = FirebaseAuth.getInstance()
         firestoreDb = FirebaseFirestore.getInstance()
 
-        // Si no hay usuario autenticado, redirigir a login
         if (firebaseAuth.currentUser == null) {
             val loginIntent = Intent(this, LoginActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
@@ -199,7 +191,6 @@ class MainActivity : ComponentActivity() {
             return
         }
 
-        // Mostrar diagnóstico si viene en el intent
         val diagnosis = intent.getStringExtra("USER_DIAGNOSIS")
         if (!diagnosis.isNullOrEmpty()) {
             Toast.makeText(this, "Diagnóstico recibido: $diagnosis", Toast.LENGTH_LONG).show()
@@ -218,10 +209,17 @@ class MainActivity : ComponentActivity() {
                 ActivityCompat.requestPermissions(
                     this,
                     arrayOf(Manifest.permission.POST_NOTIFICATIONS),
-                    100 // requestCode arbitrario
+                    100
                 )
             }
         }
+
+        // 🔹 Programar alarmas diarias
+        val scheduler = AlarmScheduler(this)
+        scheduler.scheduleDailyReminders()          // 🌞🍽️🩸🔥🏃 todo junto
+        scheduler.scheduleDailyActivityReminders()  // 🏃 actividad 9 AM, 4 PM, 9 PM
+
+
         setContent {
             Diabetes_AppTheme {
                 MainScreen(
@@ -598,8 +596,10 @@ fun MainScreen(
 
                     items.forEach { item ->
                         val isSelected = currentRoute == item.route
-                        val iconColor = if (isSelected) colorResource(id = R.color.bottomNavItemActive) else colorResource(id = R.color.bottomNavItemInactive)
-                        val labelColor = if (isSelected) colorResource(id = R.color.bottomNavItemActive) else colorResource(id = R.color.bottomNavItemInactive)
+                        val iconColor = if (isSelected) colorResource(id = R.color.bottomNavItemActive)
+                        else colorResource(id = R.color.bottomNavItemInactive)
+                        val labelColor = if (isSelected) colorResource(id = R.color.bottomNavItemActive)
+                        else colorResource(id = R.color.bottomNavItemInactive)
 
                         if (item.route == "home") {
                             NavigationBarItem(
@@ -635,7 +635,7 @@ fun MainScreen(
                                         text = item.title,
                                         fontSize = 12.sp,
                                         maxLines = 1,
-                                        color = if (isSelected) colorResource(id = R.color.bottomNavItemActive) else colorResource(id = R.color.bottomNavItemInactive)
+                                        color = Color.Black
                                     )
                                 },
                                 selected = isSelected,
@@ -649,6 +649,10 @@ fun MainScreen(
                                     }
                                 },
                                 colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = Color.Black,
+                                    unselectedIconColor = Color.Black,
+                                    selectedTextColor = Color.Black,
+                                    unselectedTextColor = Color.Black,
                                     indicatorColor = Color.Transparent
                                 )
                             )
@@ -675,6 +679,10 @@ fun MainScreen(
                                     scope.launch { drawerState.open() }
                                 },
                                 colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = Color.Black,
+                                    unselectedIconColor = Color.Black,
+                                    selectedTextColor = Color.Black,
+                                    unselectedTextColor = Color.Black,
                                     indicatorColor = Color.Transparent
                                 )
                             )
@@ -707,6 +715,10 @@ fun MainScreen(
                                     }
                                 },
                                 colors = NavigationBarItemDefaults.colors(
+                                    selectedIconColor = Color.Black,
+                                    unselectedIconColor = Color.Black,
+                                    selectedTextColor = Color.Black,
+                                    unselectedTextColor = Color.Black,
                                     indicatorColor = Color.Transparent
                                 )
                             )
@@ -857,7 +869,6 @@ fun MainScreen(
                                         dosesToCancel.forEach { timeStr ->
                                             alarmScheduler.cancelNotification(medicationToRemove, timeStr)
                                         }
-
                                         firestoreDb.collection("users").document(userId)
                                             .collection("medications").document(medicationToRemove.name)
                                             .delete()
@@ -2325,28 +2336,30 @@ fun DoseTrackingRow(
     onMarkDoseTaken: (String, String) -> Unit
 ) {
     val expectedTime = try { LocalTime.parse(timeStr) } catch (e: Exception) { LocalTime.MAX }
-    val isAvailableToTake = expectedTime.isBefore(currentTime.plusMinutes(60))
-    val isPast = expectedTime.isBefore(currentTime.minusMinutes(5)) // Si ya pasó hace más de 5 minutos
+
+    // --- LÓGICA CORREGIDA PARA PERMITIR REGISTRO ATRASADO ---
+    // Se puede tomar desde 60 min antes y NO hay límite de tiempo después (se elimina isPast)
+    val isAvailableToTake = currentTime.isAfter(expectedTime.minusMinutes(60))
+    val isLate = currentTime.isAfter(expectedTime.plusMinutes(10)) && !isTaken
 
     val indicatorColor = when {
         isTaken -> colorResource(id = R.color.accentGreenButton) // Verde: Tomada
-        isAvailableToTake && !isPast -> colorResource(id = R.color.accentPinkButton) // Rosa: Ahora/Pendiente (tomable)
-        isPast -> colorResource(id = R.color.vitalsTextSecondary) // Gris Oscuro: Pasada/Perdida
-        else -> colorResource(id = R.color.textHint) // Gris Claro: Próxima
+        isLate -> Color(0xFFE57373) // Rojo suave: Atrasada pero disponible
+        isAvailableToTake -> colorResource(id = R.color.accentPinkButton) // Rosa: Ahora/Pendiente
+        else -> colorResource(id = R.color.textHint) // Gris: Próxima
     }
 
     val buttonText = when {
         isTaken -> "TOMADA"
-        isAvailableToTake && !isPast -> "TOMAR"
-        isPast -> "PERDIDA"
-        else -> "Próxima"
+        isLate -> "ATRASADA" // En lugar de PERDIDA
+        isAvailableToTake -> "TOMAR"
+        else -> "PRÓXIMA"
     }
 
     Row(
         modifier = Modifier
             .fillMaxWidth()
             .clip(RoundedCornerShape(10.dp))
-            // Fondo sutil para toda la fila
             .background(colorResource(id = R.color.placeholderBackground).copy(alpha = 0.5f))
             .padding(horizontal = 12.dp, vertical = 8.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -2355,7 +2368,7 @@ fun DoseTrackingRow(
         // Hora y Etiqueta
         Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.weight(1f)) {
             Icon(
-                imageVector = Icons.Default.Schedule, // Icono de reloj para la hora
+                imageVector = Icons.Default.Schedule,
                 contentDescription = "Hora",
                 tint = colorResource(id = R.color.primaryText).copy(alpha = 0.8f),
                 modifier = Modifier.size(18.dp)
@@ -2375,17 +2388,17 @@ fun DoseTrackingRow(
         }
 
         // Botón de Estado / Acción
-        if (isTaken || isPast) {
+        // ✅ CORRECCIÓN: El botón de acción ahora se muestra siempre que no esté tomada y ya sea la hora
+        if (isTaken) {
             Text(
                 text = buttonText,
                 fontSize = 13.sp,
                 fontWeight = FontWeight.ExtraBold,
                 color = indicatorColor
             )
-        } else {
+        } else if (isAvailableToTake) {
             Button(
                 onClick = { onMarkDoseTaken(medicationName, timeStr) },
-                enabled = isAvailableToTake,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = indicatorColor
                 ),
@@ -2395,14 +2408,21 @@ fun DoseTrackingRow(
                 Text(
                     text = buttonText,
                     fontSize = 12.sp,
-                    color = colorResource(id = R.color.textOnPrimaryColor),
+                    color = Color.White,
                     fontWeight = FontWeight.SemiBold
                 )
             }
+        } else {
+            // Caso para dosis futuras (Próxima)
+            Text(
+                text = buttonText,
+                fontSize = 13.sp,
+                fontWeight = FontWeight.Bold,
+                color = colorResource(id = R.color.textHint)
+            )
         }
     }
 }
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun AddEditMedicationScreen(

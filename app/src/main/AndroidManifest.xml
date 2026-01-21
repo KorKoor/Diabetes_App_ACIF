@@ -21,7 +21,8 @@
         <receiver
             android:name=".AlarmReceiver"
             android:enabled="true"
-            android:exported="true" />
+            android:exported="true"
+            />
 
         <receiver
             android:name=".BootReceiver"
@@ -36,7 +37,6 @@
         <activity
             android:name="com.example.diabetes_app.LoginActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Diabetes_App">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
@@ -53,7 +53,6 @@
         <activity
             android:name=".MainActivity"
             android:exported="false"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Diabetes_App" />
 
         <activity android:name=".RegisterActivity" />
@@ -61,7 +60,6 @@
         <activity
             android:name="com.example.diabetes_app.DiagnosisSelectionActivity"
             android:exported="true"
-            android:label="@string/app_name"
             android:theme="@style/Theme.Diabetes_App" />
 
         <provider

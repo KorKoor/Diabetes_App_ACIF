@@ -209,4 +209,114 @@ class NotificationHelper(private val context: Context) {
         )
         showNotification(titles.random(), messages.random(), notificationId)
     }
+        // 🌞 Buenos días
+        fun showGoodMorning(notificationId: Int) {
+            val titles = listOf(
+                "¡Buenos días! 🌞",
+                "¡Despierta con energía! ☀️",
+                "¡Un nuevo día comienza! ✨"
+            )
+            val messages = listOf(
+                "Recuerda revisar tu glucosa matutina y empieza el día con hábitos saludables. 💪",
+                "Hoy es una nueva oportunidad para cuidar tu salud. ¡Hazlo con constancia y alegría! 😄",
+                "¡Sonríe! Cada día cuenta en tu progreso. Mantén tu racha y sigue adelante. 🔥"
+            )
+            showNotification(titles.random(), messages.random(), notificationId)
+        }
+
+        // 🔥 Racha (wrapper para compatibilidad con AlarmReceiver)
+        fun showStreakReminder(notificationId: Int) {
+            val streakDays = 7 // Ejemplo, luego puedes traerlo de Firestore
+            showStreakNotification(streakDays, notificationId)
+        }
+    /**
+     * 🔥 Notificación de Racha basada en los días consecutivos registrados.
+     */
+    fun showStreakReminder(streakDays: Int, notificationId: Int) {
+        val title: String
+        val message: String
+
+        when {
+            streakDays == 0 -> {
+                title = "¡Empieza tu racha hoy! 🚀"
+                message = "Registra tu primera dosis o glucosa y comienza tu camino hacia el hábito saludable. 💪"
+            }
+            streakDays == 1 -> {
+                title = "¡Primer paso dado! 👣"
+                message = "Has completado tu primer día de registro. ¡Sigue así, cada día cuenta! 🌟"
+            }
+            streakDays in 2..6 -> {
+                title = "¡Racha en progreso! 🎉"
+                message = "Llevas $streakDays días consecutivos cuidando tu salud. ¡La constancia es tu superpoder! ⚡"
+            }
+            streakDays in 7..29 -> {
+                title = "¡Una semana de éxito! 🏆"
+                message = "Tu racha ya es de $streakDays días. ¡Impresionante disciplina, sigue acumulando logros! 🔥"
+            }
+            streakDays >= 30 -> {
+                title = "¡Héroe del mes! 🥇"
+                message = "Has alcanzado $streakDays días consecutivos. ¡Un hábito poderoso que transforma tu vida! ❤️"
+            }
+            else -> {
+                title = "¡Racha activa! 🔥"
+                message = "Tu racha actual es de $streakDays días. ¡No la rompas, tú puedes! 💯"
+            }
+        }
+
+        showNotification(title, message, notificationId)
+    }
+    // ----------------------------------------------------------------------
+    // --- 7. Recordatorios de Seguimiento (30 min después) ---
+    // ----------------------------------------------------------------------
+
+    /**
+     * 🍽️ Recordatorio de seguimiento para comidas
+     */
+    fun showMealFollowup(notificationId: Int) {
+        val titles = listOf(
+            "🍽️ ¿Ya registraste tu comida?",
+            "¡No olvides tu registro nutricional! 🥗",
+            "Tu control depende de tus registros 📊"
+        )
+        val messages = listOf(
+            "Han pasado 30 minutos desde tu comida. Registra lo que consumiste para mantener tu control.",
+            "¿Ya anotaste tu almuerzo/cena? Es vital para ajustar tu tratamiento y mantener tu racha.",
+            "Tu diario de comidas es tu mejor aliado. ¡Regístralo ahora y sigue tu progreso!"
+        )
+        showNotification(titles.random(), messages.random(), notificationId)
+    }
+
+    /**
+     * 💊 Recordatorio de seguimiento para medicamentos
+     */
+    fun showMedicationFollowup(notificationId: Int) {
+        val titles = listOf(
+            "💊 ¿Ya marcaste tu medicamento?",
+            "¡No pierdas tu racha de medicación! 🔔",
+            "Tu tratamiento necesita constancia ✅"
+        )
+        val messages = listOf(
+            "Han pasado 30 minutos desde tu dosis. Si ya la tomaste, regístrala en la app.",
+            "¿Ya anotaste tu medicamento? Mantén tu control y evita confusiones.",
+            "Tu constancia es tu fuerza. Marca tu dosis para seguir tu progreso."
+        )
+        showNotification(titles.random(), messages.random(), notificationId)
+    }
+
+    /**
+     * 🩸 Recordatorio de seguimiento para glucosa
+     */
+    fun showGlucoseFollowup(notificationId: Int) {
+        val titles = listOf(
+            "🩸 ¿Ya registraste tu glucosa?",
+            "¡Tus datos son poder! 📊",
+            "No olvides tu medición ⚠️"
+        )
+        val messages = listOf(
+            "Han pasado 30 minutos desde tu chequeo. Registra tu nivel para mantener tu historial completo.",
+            "¿Ya anotaste tu glucosa? Es clave para entender tu progreso y ajustar tu tratamiento.",
+            "Tu salud depende de tus registros. ¡Guarda tu medición ahora!"
+        )
+        showNotification(titles.random(), messages.random(), notificationId)
+    }
 }

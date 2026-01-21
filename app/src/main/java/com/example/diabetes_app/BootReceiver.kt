@@ -63,11 +63,27 @@ class BootReceiver : BroadcastReceiver() {
     /**
      * Reprograma recordatorios fijos (ejemplo: chequeo de glucosa).
      */
+    /**
+     * Reprograma todos los recordatorios fijos tras reinicio del dispositivo.
+     */
     private fun reprogramFixedReminders(scheduler: AlarmScheduler) {
-        scheduler.scheduleGlucoseCheck(GLUCOSE_CHECK_ID, 8, 0) // 8:00 AM fijo
-        Log.d(TAG, "Recordatorio de glucosa reprogramado a las 08:00")
-    }
+        // 🌞 Buenos días
+        scheduler.scheduleGoodMorningReminder()
 
+        // 🍽️ Comidas con seguimiento (+30 min)
+        scheduler.scheduleMealReminders()
+
+        // 🩸 Glucosa (mañana, medio día, tarde, noche)
+        scheduler.scheduleGlucoseReminders()
+
+        // 🏃 Actividad física (9 AM, 4 PM, 9 PM)
+        scheduler.scheduleDailyActivityReminders()
+
+        // 🔥 Racha (9 PM)
+        scheduler.scheduleStreakReminderDefault()
+
+        Log.d(TAG, "✅ Todos los recordatorios fijos reprogramados tras reinicio")
+    }
     companion object {
         private const val TAG = "BootReceiver"
         private const val GLUCOSE_CHECK_ID = 1001
